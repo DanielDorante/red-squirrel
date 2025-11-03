@@ -1,4 +1,5 @@
 import pygame
+from promotion import PromotionController
 from move_history import MoveHistory
 from material_tracker import MaterialTracker
 from legal_moves import (
@@ -30,13 +31,8 @@ valid_moves = []
 current_turn = "white" 
 last_pawn_move = None 
 
-# Promotion state
-promotion_pending = False
-promotion_from = None
-promotion_to = None
-promotion_piece_color = None
-promotion_is_capture = False
-promotion_captured_piece = None
+# Promotion controller
+promotion = PromotionController()
 
 # Settings state
 settings_dropdown_open = False 
@@ -194,92 +190,7 @@ def get_square_from_mouse(pos):
     
     return row, col
 
-def draw_promotion_dialog():
-    """Draw the promotion piece selection dropdown on the promotion square"""
-    if not promotion_pending:
-        return
-    
-    # Get the promotion square position
-    end_row, end_col = promotion_to
-    square_size = 60
-    board_offset_y = 40
-    
-    # Calculate display position based on board orientation
-    if white_on_bottom:
-        display_row, display_col = end_row, end_col
-    else:
-        display_row, display_col = 7 - end_row, 7 - end_col
-    
-    # Calculate screen position of the promotion square
-    square_x = display_col * square_size
-    square_y = board_offset_y + display_row * square_size
-    
-    # Dropdown configuration
-    dropdown_width = square_size
-    dropdown_height = square_size * 4  # 4 pieces stacked vertically
-    
-    # Position dropdown relative to display position so it stays on-screen
-    # If the square is visually near the bottom half, open upwards; otherwise open downwards
-    if display_row >= 4:
-        dropdown_y = square_y - dropdown_height + square_size  # open up
-    else:
-        dropdown_y = square_y  # open down
-    
-    dropdown_x = square_x
-    
-    # Draw dropdown background with border
-    pygame.draw.rect(screen, (255, 255, 255), (dropdown_x, dropdown_y, dropdown_width, dropdown_height))
-    pygame.draw.rect(screen, (0, 0, 0), (dropdown_x, dropdown_y, dropdown_width, dropdown_height), 3)
-    
-    # Draw promotion piece options (Queen, Rook, Bishop, Knight)
-    promotion_pieces = ['Q', 'R', 'B', 'N']
-    
-    for i, piece_type in enumerate(promotion_pieces):
-        option_y = dropdown_y + i * square_size
-        
-        # Get the correct piece based on color
-        if promotion_piece_color:  # White
-            piece = piece_type
-        else:  # Black
-            piece = piece_type.lower()
-        
-        # Draw piece option background
-        option_rect = (dropdown_x, option_y, dropdown_width, square_size)
-        pygame.draw.rect(screen, (240, 240, 240), option_rect)
-        pygame.draw.rect(screen, (100, 100, 100), option_rect, 2)
-        
-        # Draw piece image
-        piece_image = pygame.transform.scale(piece_images[piece], (square_size - 10, square_size - 10))
-        screen.blit(piece_image, (dropdown_x + 5, option_y + 5))
-        
-        # Highlight on hover (optional enhancement)
-        mouse_x, mouse_y = pygame.mouse.get_pos()
-        if dropdown_x <= mouse_x <= dropdown_x + dropdown_width and option_y <= mouse_y <= option_y + square_size:
-            pygame.draw.rect(screen, (200, 200, 255), option_rect, 3)
-    
-    # Draw instruction text
-    font_small = pygame.font.Font(None, 20)
-    text = font_small.render("PROMOTION REQUIRED", True, (255, 255, 255))
-    text_rect = text.get_rect()
-    text_x = dropdown_x + dropdown_width + 10
-    text_y = dropdown_y + dropdown_height // 2 - text_rect.height // 2
-    
-    # Draw text background
-    padding = 5
-    text_bg_rect = (text_x - padding, text_y - padding, 
-                   text_rect.width + padding * 2, text_rect.height + padding * 2)
-    pygame.draw.rect(screen, (255, 0, 0), text_bg_rect)  # Red background for urgency
-    pygame.draw.rect(screen, (255, 255, 255), text_bg_rect, 2)
-    
-    screen.blit(text, (text_x, text_y))
-    
-    # Add an arrow pointing to the dropdown
-    arrow_points = [
-        (text_x - 15, text_y + text_rect.height // 2),
-        (text_x - 5, text_y + text_rect.height // 2 - 5),
-        (text_x - 5, text_y + text_rect.height // 2 + 5)
-    ]
-    pygame.draw.polygon(screen, (255, 255, 255), arrow_points)
+## Promotion UI moved to promotion.PromotionController
 
 def draw_settings_gear():
     """Draw the settings gear icon in the top-right corner"""
@@ -375,130 +286,21 @@ def handle_settings_click(pos):
     
     return False  # Click not consumed
 
-def handle_promotion_click(pos):
-    """Handle click during promotion selection on the dropdown"""
-    if not promotion_pending:
-        return None
-    
-    x, y = pos
-    
-    # Get the promotion square position
-    end_row, end_col = promotion_to
-    square_size = 60
-    board_offset_y = 40
-    
-    # Calculate display position based on board orientation
-    if white_on_bottom:
-        display_row, display_col = end_row, end_col
-    else:
-        display_row, display_col = 7 - end_row, 7 - end_col
-    
-    # Calculate dropdown position
-    square_x = display_col * square_size
-    square_y = board_offset_y + display_row * square_size
-    
-    dropdown_width = square_size
-    dropdown_height = square_size * 4
-    
-    # Position dropdown relative to display position so it stays on-screen
-    if display_row >= 4:
-        dropdown_y = square_y - dropdown_height + square_size  # open up
-    else:
-        dropdown_y = square_y  # open down
-    
-    dropdown_x = square_x
-    
-    # Check if click is within dropdown
-    if not (dropdown_x <= x <= dropdown_x + dropdown_width and 
-            dropdown_y <= y <= dropdown_y + dropdown_height):
-        return None  # Click outside dropdown, ignore
-    
-    # Calculate which piece option was clicked
-    relative_y = y - dropdown_y
-    option_index = relative_y // square_size
-    
-    # Make sure the click is within valid bounds
-    if 0 <= option_index < 4:
-        promotion_pieces = ['Q', 'R', 'B', 'N']
-        return promotion_pieces[option_index]
-    
-    return None
-
-def complete_promotion(selected_piece_type):
-    """Complete the pawn promotion"""
-    global promotion_pending, promotion_from, promotion_to, promotion_piece_color
-    global promotion_is_capture, promotion_captured_piece
-    global current_turn, last_pawn_move
-    
-    # Get the promoted piece
-    promoted_piece = get_promoted_piece(selected_piece_type, promotion_piece_color)
-    
-    # Place the promoted piece on the board
-    end_row, end_col = promotion_to
-    board_state[end_row][end_col] = promoted_piece
-    
-    # Track material capture if there was one
-    if promotion_is_capture and promotion_captured_piece:
-        material_tracker.capture_piece(promotion_captured_piece, current_turn)
-    
-    # Track material gain from promotion
-    material_tracker.promote_pawn(promoted_piece, current_turn)
-    
-    # Continue with the rest of move processing
-    piece = "P" if promotion_piece_color else "p"  # Original pawn
-    selected_square = promotion_from
-    
-    # Check if the move puts opponent in check or checkmate
-    opponent_color = "black" if current_turn == "white" else "white"
-    is_check = is_in_check(opponent_color, board_state, white_on_bottom)
-    is_checkmate_result = False
-    is_stalemate_result = False
-    
-    if is_check:
-        is_checkmate_result = is_checkmate(opponent_color, board_state, white_on_bottom)
-        if is_checkmate_result:
-            print(f"CHECKMATE DETECTED! {opponent_color} is in checkmate")
-    else:
-        is_stalemate_result = is_stalemate(opponent_color, board_state, white_on_bottom)
-        if is_stalemate_result:
-            print(f"STALEMATE DETECTED! {opponent_color} has no legal moves")
-    
-    # Generate move notation (with promotion)
-    move_notation = move_history.convert_to_algebraic_notation(
-        selected_square, promotion_to, piece, board_state,
-        is_capture=promotion_is_capture, is_check=is_check, is_checkmate=is_checkmate_result,
-        promotion_piece=selected_piece_type
-    )
-    
-    print(f"Promotion move notation: {move_notation}")
-    
-    is_white_move = current_turn == "white"
-    move_history.add_move(move_notation, is_white_move)
-    
-    # Reset promotion state
-    promotion_pending = False
-    promotion_from = None
-    promotion_to = None
-    promotion_piece_color = None
-    promotion_is_capture = False
-    promotion_captured_piece = None
-    
-    switch_turn()
+## Promotion logic moved to promotion.PromotionController
 
 def handle_click(pos):
     global selected_square, valid_moves, last_pawn_move, current_turn
-    global promotion_pending, promotion_from, promotion_to, promotion_piece_color
-    global promotion_is_capture, promotion_captured_piece
     
     # Check settings clicks first
     if handle_settings_click(pos):
         return  # Settings click was handled
     
     # If promotion is pending, handle promotion selection
-    if promotion_pending:
-        selected_piece = handle_promotion_click(pos)
+    if promotion.pending:
+        selected_piece = promotion.handle_click(pos, white_on_bottom)
         if selected_piece:
-            complete_promotion(selected_piece)
+            if promotion.complete(selected_piece, board_state, current_turn, move_history, material_tracker, white_on_bottom):
+                switch_turn()
         return
     
     row, col = get_square_from_mouse(pos)
@@ -559,12 +361,7 @@ def handle_click(pos):
 
                 # Handle pawn promotion
                 if is_promotion:
-                    promotion_pending = True
-                    promotion_from = selected_square
-                    promotion_to = (end_row, end_col)
-                    promotion_piece_color = piece.isupper()
-                    promotion_is_capture = is_capture
-                    promotion_captured_piece = captured_piece
+                    promotion.start(selected_square, (end_row, end_col), piece.isupper(), is_capture, captured_piece)
                     deselect()
                     return  # Exit early, wait for promotion selection
 
@@ -792,23 +589,8 @@ while running:
     draw_board()
     
     # Only highlight moves if not in promotion mode
-    if not promotion_pending:
+    if not promotion.pending:
         highlight_moves(valid_moves)
-    else:
-        # Highlight the promotion square in a special color
-        end_row, end_col = promotion_to
-        square_size = 60
-        board_offset_y = 40
-        
-        # Calculate display position based on board orientation
-        if white_on_bottom:
-            display_row, display_col = end_row, end_col
-        else:
-            display_row, display_col = 7 - end_row, 7 - end_col
-        
-        promotion_rect = (display_col * square_size, board_offset_y + display_row * square_size, square_size, square_size)
-        pygame.draw.rect(screen, (255, 215, 0), promotion_rect)  # Gold highlight for promotion
-        pygame.draw.rect(screen, (255, 165, 0), promotion_rect, 4)  # Orange border
     
     draw_pieces(board_state)
     draw_labels()
@@ -820,9 +602,9 @@ while running:
     draw_settings_gear()
     draw_settings_dropdown()
     
-    # Draw promotion dialog if needed
-    if promotion_pending:
-        draw_promotion_dialog()
+    # Draw promotion UI if needed
+    if promotion.pending:
+        promotion.draw(screen, piece_images, white_on_bottom)
     
     pygame.display.flip()
 pygame.quit()
