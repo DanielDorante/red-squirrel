@@ -1,4 +1,5 @@
 import pygame
+import renderer
 from promotion import PromotionController
 from move_history import MoveHistory
 from material_tracker import MaterialTracker
@@ -87,86 +88,11 @@ else:
         ["r", "n", "b", "q", "k", "b", "n", "r"],
     ]
 
-def draw_board():
-    square_size = 60
-    board_offset_y = 40  # Offset for material display at top
-    for row in range(8):
-        for col in range(8):
-            # Calculate display position based on board orientation
-            if white_on_bottom:
-                display_row, display_col = row, col
-            else:
-                display_row, display_col = 7 - row, 7 - col
-            
-            color = light_color if (row+col) % 2 == 0 else dark_color
-            
-            # Check if this square has a king that's in check
-            piece = board_state[row][col]
-            king_in_check = False
-            if piece == "K" and is_in_check("white", board_state, white_on_bottom):
-                king_in_check = True
-            elif piece == "k" and is_in_check("black", board_state, white_on_bottom):
-                king_in_check = True
-            
-            # If king is in check, make the square red
-            if king_in_check:
-                color = (255, 100, 100)  # Red color for check
-            
-            pygame.draw.rect(screen, color, (display_col * square_size, board_offset_y + display_row * square_size, square_size, square_size))
+## moved to renderer.draw_board
 
-def draw_pieces(board):
-    square_size = 60
-    board_offset_y = 40  # Offset for material display at top
-    for r in range(8):
-        for c in range(8):
-            piece = board[r][c]
-            if piece != ".":
-                # Calculate display position based on board orientation
-                if white_on_bottom:
-                    display_row, display_col = r, c
-                else:
-                    display_row, display_col = 7 - r, 7 - c
-                
-                piece_image = pygame.transform.scale(piece_images[piece], (square_size, square_size))
-                screen.blit(piece_image, (display_col * square_size, board_offset_y + display_row * square_size))
+## moved to renderer.draw_pieces
 
-def draw_labels():
-    letters = "abcdefgh"
-    numbers = "87654321"  
-    square_size = 60
-    board_offset_y = 40  # Offset for material display at top
-
-    if white_on_bottom:
-        for col, letter in enumerate(letters):
-            text = font.render(letter, True, label_color)
-            text_width, text_height = font.size(letter)
-            x = (col + 1) * square_size - text_width - 5
-            y = board_offset_y + 8 * square_size - text_height - 5
-            screen.blit(text, (x, y))
-
-        for row, number in enumerate(numbers):
-            text = font.render(number, True, label_color)
-            x = 5
-            y = board_offset_y + row * square_size + 5
-            screen.blit(text, (x, y))
-    else:
-        reversed_letters = letters[::-1]  # h to a
-        reversed_numbers = numbers[::-1]  # 1 to 8
-        for col, letter in enumerate(reversed_letters):
-            text = font.render(letter, True, label_color)
-            text_width, text_height = font.size(letter)
-            # Letters at top now (row 0 area)
-            x = (col + 1) * square_size - text_width - 5
-            y = board_offset_y + 5  # top edge now
-            screen.blit(text, (x, y))
-
-        # Numbers along the right side now:
-        for row, number in enumerate(reversed_numbers):
-            text = font.render(number, True, label_color)
-            text_width, text_height = font.size(number)
-            x = (8 * square_size) - text_width - 5
-            y = board_offset_y + row * square_size + 5
-            screen.blit(text, (x, y))
+## moved to renderer.draw_labels
 
 def get_square_from_mouse(pos):
     x, y = pos
@@ -570,6 +496,8 @@ def switch_turn():
     global current_turn
     current_turn = "black" if current_turn == "white" else "white"
 
+
+#####  game loop #####
 running = True
 while running:
     for event in pygame.event.get():
@@ -583,17 +511,17 @@ while running:
     screen.fill((50, 50, 50))  # Dark background
     
     # Draw material displays at top and bottom
-    draw_material_displays()
+    renderer.draw_material_displays(screen, font, white_on_bottom, material_tracker, piece_images)
     
     # Draw game elements (board stays in original position)
-    draw_board()
+    renderer.draw_board(screen, board_state, light_color, dark_color, white_on_bottom)
     
     # Only highlight moves if not in promotion mode
     if not promotion.pending:
-        highlight_moves(valid_moves)
+        renderer.highlight_moves(screen, valid_moves, white_on_bottom)
     
-    draw_pieces(board_state)
-    draw_labels()
+    renderer.draw_pieces(screen, board_state, piece_images, white_on_bottom)
+    renderer.draw_labels(screen, font, label_color, white_on_bottom)
     
     # Draw move history panel (always visible on the right)
     move_history.draw(screen)
