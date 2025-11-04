@@ -11,6 +11,7 @@ class MoveHistory:
         self.background_color = (240, 240, 240)
         self.text_color = (0, 0, 0)
         self.border_color = (100, 100, 100)
+        self.scroll_y = 0  # pixels scrolled from top
         
     def toggle_visibility(self):
         """Toggle the move history panel visibility"""
@@ -151,7 +152,7 @@ class MoveHistory:
             return result
     
     def draw(self, screen):
-        """Draw the move history panel"""
+        """Draw the move history panel with scrolling support"""
         # Draw background panel
         panel_rect = pygame.Rect(self.panel_x, 0, self.panel_width, self.panel_height)
         pygame.draw.rect(screen, self.background_color, panel_rect)
@@ -161,30 +162,65 @@ class MoveHistory:
         title_text = self.font.render("Move History", True, self.text_color)
         screen.blit(title_text, (self.panel_x + 10, 10))
         
-        # Draw moves
-        y_offset = 50
+        # Draw moves with scrolling
+        start_y = 50 - self.scroll_y
         line_height = 25
-        
+        content_height = 50 + len(self.moves) * line_height + 10
+        visible_top = 0
+        visible_bottom = self.panel_height
+
         for i, (white_move, black_move) in enumerate(self.moves):
+            y = start_y + i * line_height
+            if y < visible_top - line_height or y > visible_bottom - 20:
+                continue
+
             move_number = i + 1
-            
-            # Format move pair
             move_text = f"{move_number}. "
             if white_move:
                 move_text += white_move
             if black_move:
                 move_text += f" {black_move}"
-            
-            # Render and draw the move
-            if y_offset < self.panel_height - 30:  # Don't draw beyond panel
-                text_surface = self.font.render(move_text, True, self.text_color)
-                screen.blit(text_surface, (self.panel_x + 10, y_offset))
-                y_offset += line_height
-        
-        # Add scrolling indication if there are too many moves
-        if len(self.moves) * line_height + 50 > self.panel_height - 30:
-            scroll_text = self.font.render("...", True, self.text_color)
-            screen.blit(scroll_text, (self.panel_x + 10, self.panel_height - 50))
+            text_surface = self.font.render(move_text, True, self.text_color)
+            screen.blit(text_surface, (self.panel_x + 10, y))
+
+        # Scrollbar
+        if content_height > self.panel_height:
+            track_margin = 8
+            track_x = self.panel_x + self.panel_width - track_margin - 6
+            track_y = 10
+            track_w = 6
+            track_h = self.panel_height - 20
+            pygame.draw.rect(screen, (210, 210, 210), (track_x, track_y, track_w, track_h))
+            pygame.draw.rect(screen, (160, 160, 160), (track_x, track_y, track_w, track_h), 1)
+
+            visible_ratio = self.panel_height / content_height
+            thumb_h = max(20, int(track_h * visible_ratio))
+            max_scroll = max(0, content_height - self.panel_height)
+            scroll_ratio = 0 if max_scroll == 0 else min(1, max(0, self.scroll_y / max_scroll))
+            thumb_y = track_y + int((track_h - thumb_h) * scroll_ratio)
+            pygame.draw.rect(screen, (120, 120, 120), (track_x, thumb_y, track_w, thumb_h))
+
+    def scroll_lines(self, lines: int):
+        line_height = 25
+        self.scroll_pixels(lines * line_height)
+
+    def scroll_pixels(self, pixels: int):
+        self.scroll_y = max(0, self.scroll_y + pixels)
+        # Clamp to content height
+        line_height = 25
+        content_height = 50 + len(self.moves) * line_height + 10
+        max_scroll = max(0, content_height - self.panel_height)
+        if self.scroll_y > max_scroll:
+            self.scroll_y = max_scroll
+
+    def handle_wheel(self, mouse_pos, wheel_y):
+        """wheel_y: positive when scrolled up in Pygame.
+        Scroll only if mouse is over the move history panel.
+        """
+        mx, my = mouse_pos
+        if self.panel_x <= mx <= self.panel_x + self.panel_width and 0 <= my <= self.panel_height:
+            # Scroll 3 lines per notch for a snappy feel; invert so wheel up moves content up
+            self.scroll_lines(-3 * wheel_y)
     
     def clear_history(self):
         """Clear all moves from history"""

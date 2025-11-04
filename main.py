@@ -709,9 +709,16 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        elif event.type == pygame.MOUSEWHEEL:
+            move_history.handle_wheel(pygame.mouse.get_pos(), event.y)
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            mouse_pos = pygame.mouse.get_pos()
-            handle_click(mouse_pos)
+            # Support legacy wheel events in addition to MOUSEWHEEL
+            if hasattr(event, 'button') and event.button in (4, 5):
+                wheel_y = 1 if event.button == 4 else -1
+                move_history.handle_wheel(pygame.mouse.get_pos(), wheel_y)
+            else:
+                mouse_pos = pygame.mouse.get_pos()
+                handle_click(mouse_pos)
 
     # If it's the engine's turn, let it move (synchronous for now)
     engine_take_turn()
