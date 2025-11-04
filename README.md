@@ -2,6 +2,12 @@
 
 A Pygame-based chess game with clean algebraic move history, smart disambiguation, check/checkmate detection, material tracking, pawn promotion UI, and a board flip option so you can play from White or Black's perspective.
 
+## PSA
+
+- When you run the engine, do it from the terminal rather than an IDE, as the engine uses a lot of RAM.
+- If you are hell bent on running the engine from an IDE, make sure you have at least 16 GB of RAM or more, or go to the main file and lower the depth to 3.
+- Also unless you want the engine to take 5 minutes per move, close all Chrome tabs. And yes, I am working on optimizing the search function.  
+
 ## ✨ Features
 
 - Standard chess rules: legal move validation, check, checkmate, stalemate
