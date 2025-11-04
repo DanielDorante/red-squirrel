@@ -6,9 +6,9 @@ A Pygame-based chess game with clean algebraic move history, smart disambiguatio
 
 - When you run the engine, do it from the terminal rather than an IDE, as the engine uses a lot of RAM.
 - If you are hell bent on running the engine from an IDE, make sure you have at least 16 GB of RAM or more, or go to the main file and lower the depth to 3.
-- Also unless you want the engine to take 5 minutes per move, close all Chrome tabs. And yes, I am working on optimizing the search function.  
+- Also, unless you want the engine to take 5 minutes per move, close all Chrome tabs. And yes, I am working on optimizing the search function.  
 
-## ✨ Features
+## Features
 
 - Standard chess rules: legal move validation, check, checkmate, stalemate
 - Castling, en passant, and pawn promotion (Q/R/B/N)
@@ -21,7 +21,7 @@ A Pygame-based chess game with clean algebraic move history, smart disambiguatio
 - Settings gear with “Flip Board” to play from either side
 - Modular code structure for easier maintenance
 
-## 🖼️ UI Overview
+## UI Overview
 
 - Left: 8x8 board (60px squares) with labels
 - Top/Bottom: Material advantage bars
@@ -29,7 +29,7 @@ A Pygame-based chess game with clean algebraic move history, smart disambiguatio
 - Top-right: Settings gear → Flip Board
 - Promotion: A dropdown appears on the promotion square; select Q/R/B/N
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Requirements
 
@@ -47,11 +47,11 @@ python -m pip install pygame
 From the project folder:
 
 ```powershell
-cd "c:\Users\dpdor\VScode Projects\ChessBot"
+cd "\ChessBot"
 python main.py
 ```
 
-## 🎮 How to Play
+## How to Play
 
 - Click a piece to select it. Legal destination squares are highlighted.
 - Click a highlighted square to move.
@@ -59,7 +59,7 @@ python main.py
 - Promotion: When a pawn reaches the last rank, a dropdown appears on that square. Click a piece (Q/R/B/N) to promote (you must choose to continue the game).
 - Flip Board: Click the gear icon (top-right) → Flip Board. This flips the view only; rules and turns remain unchanged.
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ChessBot/
@@ -79,14 +79,14 @@ ChessBot/
 └─ README.md                  # This file
 ```
 
-## 🧠 Design Notes
+## Design Notes
 
 - Display orientation is decoupled from rules. Internally:
   - White pawns move toward row 0; Black toward row 7.
   - Castling uses fixed king/rook squares by color.
 - The view layer handles flipping (drawing and click mapping), so gameplay logic is consistent regardless of orientation.
 
-## 🧪 Troubleshooting
+## Troubleshooting
 
 - "ModuleNotFoundError: No module named 'pygame'"
   - Install pygame: `python -m pip install pygame`
@@ -96,7 +96,7 @@ ChessBot/
 - Promotion dropdown off-screen
   - The dropdown auto-adjusts based on square position and board orientation. If you see a layout issue, please open an issue with a screenshot.
 
-## 🗺️ Roadmap Ideas
+## Roadmap Ideas
 
 - Player vs. Engine (Stockfish/UCI integration)
 - Move undo/redo
@@ -104,7 +104,7 @@ ChessBot/
 - PGN export/import
 - Per-square move hints and last move highlight
 
-## 📸 Screenshots
+## Screenshots
 
 You can add screenshots to the repo and link them here:
 
@@ -119,15 +119,9 @@ Then reference with:
 ![Game](docs/screenshot-1.png)
 ```
 
-## 📜 License
-
-Choose a license (MIT is common for small projects). Add a `LICENSE` file and update this section.
-
----
-
 Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot! 🎉
 
-## 🔎 Evaluation module (engine work-in-progress)
+## Evaluation module (engine work-in-progress)
 
 An extensible static evaluation lives in `evaluation.py` and currently includes:
 
@@ -136,11 +130,6 @@ An extensible static evaluation lives in `evaluation.py` and currently includes:
 - Pawn structure (doubled, isolated, passed)
 - Simple king safety (starting-square penalty while queens remain)
 
-Quick check from the project folder:
-
-```powershell
-python eval_smoke_test.py
-```
 
 Sample outputs you should see (approximate):
 
