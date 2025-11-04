@@ -1,4 +1,5 @@
 import pygame
+import random
 import renderer
 from promotion import PromotionController
 from move_history import MoveHistory
@@ -10,7 +11,7 @@ from legal_moves import (
     is_promotion_move, get_promoted_piece
 )
 from evaluation import evaluate, evaluate_pov
-from engine.search import SearchState, find_best_move, Move as EngineMove
+from engine.search import SearchState, find_best_move, generate_legal_moves, Move as EngineMove
 
 pygame.init()
 screen = pygame.display.set_mode((680,560))  # Expanded height for material displays
@@ -48,9 +49,11 @@ settings_dropdown_open = False
 engine_enabled = False        # Set True to let the engine play
 human_side = 'white'          # Side controlled by human
 engine_side = 'black'         # Engine plays the opposite of human_side
-engine_depth = 3              # search depth (plies)
+engine_depth = 4              # search depth (plies)
 engine_think_delay_ms = 0   # delay before engine moves (milliseconds)
 engine_next_move_time = None  # scheduled time (ticks) when engine will move
+engine_randomize_first = True # randomize the engine's first move this game
+engine_has_moved = False      # track if engine has made a move this game
 
 # Castling rules
 white_king_moved = False
@@ -234,15 +237,22 @@ def handle_settings_click(pos):
                     human_side = 'white'
                     engine_side = 'black'
                     engine_enabled = engine_enabled  # no change; keep current on/off
+                    globals()['engine_has_moved'] = False
+                    globals()['engine_next_move_time'] = None
                     print("Human side set to White; engine set to Black (opposite)")
                 elif key == 'human_black':
                     human_side = 'black'
                     engine_side = 'white'
                     engine_enabled = engine_enabled
+                    globals()['engine_has_moved'] = False
+                    globals()['engine_next_move_time'] = None
                     print("Human side set to Black; engine set to White (opposite)")
                 elif key == 'engine_toggle':
                     engine_enabled = not engine_enabled
                     engine_side = 'black' if human_side == 'white' else 'white'
+                    if engine_enabled:
+                        globals()['engine_has_moved'] = False
+                        globals()['engine_next_move_time'] = None
                     print(f"Engine {'enabled' if engine_enabled else 'disabled'} on {engine_side}")
                 settings_dropdown_open = False
                 return True
@@ -694,12 +704,21 @@ def engine_take_turn():
     )
 
     side = current_turn
-    best = find_best_move(board_state, side, engine_depth, st=st)
+    # Randomize the very first engine move for variety
+    if engine_randomize_first and not engine_has_moved:
+        moves = generate_legal_moves(board_state, side, st)
+        if not moves:
+            print(f"No legal moves for {side} (checkmate or stalemate)")
+            return
+        best = random.choice(moves)
+    else:
+        best = find_best_move(board_state, side, engine_depth, st=st)
     if best is None:
         print(f"No legal moves for {side} (checkmate or stalemate)")
         return
 
     apply_engine_move(best, side)
+    globals()['engine_has_moved'] = True
     switch_turn()
 
 

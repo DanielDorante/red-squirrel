@@ -4,13 +4,14 @@ Alpha-beta Negamax search for ChessBot.
 This module is UI-free and operates directly on the 8x8 board matrix used by main.py.
 It uses evaluate(board) from evaluation.py and move generation from legal_moves.py.
 
-Move representation: a lightweight tuple-like class carrying start, end, and optional promotion.
-State: carries castling flags and last_pawn_move so special moves can be (partially) handled.
+Move representation: a lightweight dataclass carrying start, end, and optional promotion.
+State: carries castling flags and last_pawn_move so special moves can be handled.
 
-NOTE: This first pass keeps make/undo simple and focuses on correctness for normal moves
-and promotions. Castling and en passant are recognized by the move generator, but
-make/undo handles rook movement and en passant capture in a minimal way.
+This version includes:
+- Single legal-move generation per node (no duplicate work for terminal checks)
+- Basic move ordering (captures, promotions, en passant first) to improve alpha-beta pruning
 """
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -25,7 +26,7 @@ from legal_moves import (
     get_promoted_piece,
     en_passant,
     get_pawn_direction,
-    get_pawn_start_row,
+    get_pawn_start_row,  # currently unused, but kept in case you use it elsewhere
 )
 
 Board = List[List[str]]
@@ -83,7 +84,7 @@ def generate_legal_moves(board: Board, side_to_move: str, st: SearchState) -> Li
                     if is_promotion_move((r, c), (er, ec), board, st.white_on_bottom):
                         # Generate four promotion choices
                         is_white = ch.isupper()
-                        for p in ('q','r','b','n'):
+                        for p in ('q', 'r', 'b', 'n'):
                             prom_piece = get_promoted_piece(p, is_white)
                             moves.append(Move(start=(r, c), end=(er, ec), promotion=prom_piece))
                     else:
@@ -260,50 +261,79 @@ def undo_move(board: Board, undo: Undo, st: SearchState):
     st.last_pawn_move = undo.prev_last_pawn_move
 
 
-def terminal_value(board: Board, colour: int, st: SearchState) -> Optional[int]:
-    """Return a value for terminal positions, or None if not terminal.
-    Stalemate -> 0; Checkmate -> large negative for side to move.
+def _move_order_key(board: Board, mv: Move) -> int:
     """
-    side = side_str(colour)
-    # Any legal moves?
-    if generate_legal_moves(board, side, st):
-        return None
-    # No moves: checkmate or stalemate
-    if is_in_check(side, board, st.white_on_bottom):
-        return -INF + 1  # losing for side to move
-    return 0  # stalemate
+    Heuristic for move ordering:
+    - Captures, promotions, and en-passant first.
+    Higher returned value = searched earlier.
+    """
+    er, ec = mv.end
+    dest_piece = board[er][ec]
+    score = 0
+
+    # Captures (including en passant)
+    if dest_piece != '.':
+        score += 1000
+    if mv.is_en_passant:
+        score += 1000
+
+    # Promotions
+    if mv.promotion is not None:
+        score += 900
+
+    # You can add more heuristics later (e.g., checks, killer moves, history)
+
+    return score
 
 
 def nega_max(board: Board, depth: int, alpha: int, beta: int, colour: int, st: SearchState) -> int:
-    # Terminal or depth cutoff
-    term = terminal_value(board, colour, st)
-    if term is not None:
-        return term
-    if depth == 0:
-        return colour * evaluate(board, 'w')
-
-    value = -INF
+    """
+    Negamax with alpha-beta pruning.
+    colour = +1 for white to move, -1 for black to move.
+    """
     side = side_str(colour)
     moves = generate_legal_moves(board, side, st)
-    # Simple move ordering: captures first (heuristic via non-empty destination)
-    moves.sort(key=lambda m: 1 if board[m.end[0]][m.end[1]] != '.' else 0, reverse=True)
+
+    # Terminal node: no legal moves
+    if not moves:
+        if is_in_check(side, board, st.white_on_bottom):
+            return -INF + 1  # checkmate is terrible for side to move
+        else:
+            return 0  # stalemate
+
+    # Depth cutoff (only after verifying it's not terminal)
+    if depth == 0:
+        # evaluate(board, 'w') should return from White's POV,
+        # so multiply by colour to flip for Black.
+        return colour * evaluate(board, 'w')
+
+    # Move ordering: good moves first → more pruning
+    moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
+
+    value = -INF
 
     for mv in moves:
         undo = make_move(board, mv, st)
         score = -nega_max(board, depth - 1, -beta, -alpha, -colour, st)
         undo_move(board, undo, st)
+
         if score > value:
             value = score
         if value > alpha:
             alpha = value
         if alpha >= beta:
-            break
+            break  # beta cutoff
+
     return value
 
 
 def find_best_move(board: Board, side_to_move: str, depth: int, st: Optional[SearchState] = None) -> Optional[Move]:
+    """
+    Root search: returns the best Move for side_to_move at given depth.
+    """
     if st is None:
         st = SearchState()
+
     colour = 1 if side_to_move == 'white' else -1
     best_move: Optional[Move] = None
     best_score = -INF
@@ -312,16 +342,28 @@ def find_best_move(board: Board, side_to_move: str, depth: int, st: Optional[Sea
     if not moves:
         return None
 
+    # Tactical shortcut: if any move is immediate checkmate, return it right away (mate-in-1)
+    opponent = 'black' if side_to_move == 'white' else 'white'
+    for mv in moves:
+        undo = make_move(board, mv, st)
+        opp_moves = generate_legal_moves(board, opponent, st)
+        is_mate = (not opp_moves) and is_in_check(opponent, board, st.white_on_bottom)
+        undo_move(board, undo, st)
+        if is_mate:
+            return mv
+
     # Same ordering as in nega_max
-    moves.sort(key=lambda m: 1 if board[m.end[0]][m.end[1]] != '.' else 0, reverse=True)
+    moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
 
     for mv in moves:
         undo = make_move(board, mv, st)
         score = -nega_max(board, depth - 1, -INF, INF, -colour, st)
         undo_move(board, undo, st)
+
         if score > best_score:
             best_score = score
             best_move = mv
+
     return best_move
 
 
