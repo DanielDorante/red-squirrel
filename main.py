@@ -19,6 +19,10 @@ pygame.display.set_caption("Chess Bot")
 # ==============================
 white_on_bottom = True
 
+# Engine hook (example):
+# from evaluation import evaluate
+# score_cp = evaluate(board_state, 'w')  # + = good for White
+
 # Colors
 light_color = (240,217,181)
 dark_color = (181,136,99)

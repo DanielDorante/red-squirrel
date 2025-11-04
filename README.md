@@ -58,6 +58,8 @@ python main.py
 ```
 ChessBot/
 ├─ main.py                    # Game loop, rendering, input, UI (gear, promotion)
+├─ evaluation.py              # Static evaluation (material, PSQT, pawn structure, king safety)
+├─ eval_smoke_test.py         # Quick script to sanity-check evaluation outputs
 ├─ legal_moves.py             # Move generation, rules (check, mate, stalemate, castling, en passant)
 ├─ move_history.py            # Algebraic notation and history panel
 ├─ disambiguation.py          # Smart disambiguation for notation
@@ -115,3 +117,34 @@ Choose a license (MIT is common for small projects). Add a `LICENSE` file and up
 ---
 
 Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot! 🎉
+
+## 🔎 Evaluation module (engine work-in-progress)
+
+An extensible static evaluation lives in `evaluation.py` and currently includes:
+
+- Material balance (centipawns)
+- Piece-square tables (knights)
+- Pawn structure (doubled, isolated, passed)
+- Simple king safety (starting-square penalty while queens remain)
+
+Quick check from the project folder:
+
+```powershell
+python eval_smoke_test.py
+```
+
+Sample outputs you should see (approximate):
+
+- Kings only: 0
+- Kings + white pawn only: around +95 (material +100 with small structure adjustments)
+- Kings + black rook only: about -500
+- Knight PSQT: center ~70 cp better than corner
+
+Usage in code (from White’s perspective):
+
+```python
+from evaluation import evaluate
+score = evaluate(board_state, 'w')
+```
+
+Note: `board_state` is the 8×8 matrix used in `main.py` with '.' for empty squares and 'P'/'p' etc. for pieces.
