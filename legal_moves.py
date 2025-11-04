@@ -33,14 +33,14 @@ def get_promoted_piece(piece_type, is_white):
     else:
         return piece_type.lower()
 
-def calculate_valid_moves(position, board_state, white_on_bottom=True):
+def calculate_valid_moves(position, board_state, white_on_bottom=True, last_pawn_move=None):
     """Calculate all valid moves for a piece at the given position"""
     row, col = position
     piece = board_state[row][col]
     moves = []
     
     if piece in "Pp":
-        moves = get_pawn_moves(position, board_state, white_on_bottom)
+        moves = get_pawn_moves(position, board_state, white_on_bottom, last_pawn_move)
     elif piece in "Nn":
         moves = get_knight_moves(position, board_state)
     elif piece in "Rr":
@@ -82,26 +82,26 @@ def get_pawn_moves(position, board_state, white_on_bottom=True, last_pawn_move=N
         if target_piece != "." and (piece.isupper() != target_piece.isupper()):
             moves.append((row + direction, col + 1))
 
-    # En passant captures
-    en_passant_capture_row = get_pawn_start_row(piece, white_on_bottom) + get_pawn_direction(piece, white_on_bottom)
-    if row == en_passant_capture_row:
-        # Check left en passant
+    # En passant captures (only on specific ranks and only if last_pawn_move matches neighbor)
+    # White can capture EP when on internal row 3; Black when on internal row 4
+    ep_row = 3 if piece.isupper() else 4
+    if row == ep_row and last_pawn_move is not None:
+        # Check left neighbor
         if col > 0:
-            enemy_pawn_row, enemy_pawn_col = row, col - 1
-            if 0 <= enemy_pawn_row < 8 and 0 <= enemy_pawn_col < 8:
-                if board_state[enemy_pawn_row][enemy_pawn_col] != "." and (piece.isupper() != board_state[enemy_pawn_row][enemy_pawn_col].isupper()):
-                    capture_r = row + direction
-                    capture_c = col - 1
+            enemy_r, enemy_c = row, col - 1
+            if 0 <= enemy_r < 8 and 0 <= enemy_c < 8:
+                enemy = board_state[enemy_r][enemy_c]
+                if enemy != "." and (piece.isupper() != enemy.isupper()) and last_pawn_move == (enemy_r, enemy_c):
+                    capture_r, capture_c = row + direction, col - 1
                     if 0 <= capture_r < 8 and 0 <= capture_c < 8 and board_state[capture_r][capture_c] == ".":
                         moves.append((capture_r, capture_c))
-        
-        # Check right en passant
+        # Check right neighbor
         if col < 7:
-            enemy_pawn_row, enemy_pawn_col = row, col + 1
-            if 0 <= enemy_pawn_row < 8 and 0 <= enemy_pawn_col < 8:
-                if board_state[enemy_pawn_row][enemy_pawn_col] != "." and (piece.isupper() != board_state[enemy_pawn_row][enemy_pawn_col].isupper()):
-                    capture_r = row + direction
-                    capture_c = col + 1
+            enemy_r, enemy_c = row, col + 1
+            if 0 <= enemy_r < 8 and 0 <= enemy_c < 8:
+                enemy = board_state[enemy_r][enemy_c]
+                if enemy != "." and (piece.isupper() != enemy.isupper()) and last_pawn_move == (enemy_r, enemy_c):
+                    capture_r, capture_c = row + direction, col + 1
                     if 0 <= capture_r < 8 and 0 <= capture_c < 8 and board_state[capture_r][capture_c] == ".":
                         moves.append((capture_r, capture_c))
 

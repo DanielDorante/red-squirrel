@@ -70,7 +70,7 @@ def generate_legal_moves(board: Board, side_to_move: str, st: SearchState) -> Li
             if ch == '.':
                 continue
             if (side_to_move == 'white' and ch.isupper()) or (side_to_move == 'black' and ch.islower()):
-                dests = calculate_valid_moves((r, c), board, st.white_on_bottom)
+                dests = calculate_valid_moves((r, c), board, st.white_on_bottom, st.last_pawn_move)
                 for (er, ec) in dests:
                     # Filter illegal (king-in-check) moves
                     if leaves_king_in_check((r, c), (er, ec), board, side_to_move, st.white_on_bottom, st.last_pawn_move):

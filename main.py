@@ -419,7 +419,7 @@ def handle_click(pos):
         selected_square = (row, col)
         piece = board_state[row][col]
         if piece != "." and ((piece.isupper() and current_turn == "white") or (piece.islower() and current_turn == "black")):
-            valid_moves = calculate_valid_moves(selected_square, board_state, white_on_bottom)
+            valid_moves = calculate_valid_moves(selected_square, board_state, white_on_bottom, last_pawn_move)
             valid_moves = [
                 move for move in valid_moves
                 if not leaves_king_in_check(selected_square, move, board_state, current_turn, white_on_bottom, last_pawn_move)
