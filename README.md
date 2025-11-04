@@ -60,6 +60,9 @@ ChessBot/
 ├─ main.py                    # Game loop, rendering, input, UI (gear, promotion)
 ├─ evaluation.py              # Static evaluation (material, PSQT, pawn structure, king safety)
 ├─ eval_smoke_test.py         # Quick script to sanity-check evaluation outputs
+├─ engine/                    # Search (negamax with alpha-beta)
+│  └─ search.py               # find_best_move and nega_max (+ simple make/undo)
+├─ engine_smoke_test.py       # Try a shallow search from the starting position
 ├─ legal_moves.py             # Move generation, rules (check, mate, stalemate, castling, en passant)
 ├─ move_history.py            # Algebraic notation and history panel
 ├─ disambiguation.py          # Smart disambiguation for notation
@@ -148,3 +151,20 @@ score = evaluate(board_state, 'w')
 ```
 
 Note: `board_state` is the 8×8 matrix used in `main.py` with '.' for empty squares and 'P'/'p' etc. for pieces.
+
+## 🤖 Engine (Negamax + Alpha-Beta)
+
+Basic engine lives in `engine/search.py` using:
+
+- `find_best_move(board, side_to_move, depth, st)`
+- `nega_max(board, depth, alpha, beta, colour, st)`
+
+State (`SearchState`) carries castling flags and the en passant marker. The engine generates legal moves, applies them with simple make/undo, and calls `evaluate(board)` at leaves.
+
+Try a shallow search from the starting position:
+
+```powershell
+python engine_smoke_test.py
+```
+
+Integration into the game loop is straightforward: when it's the engine's turn, call `find_best_move(...)` and then apply the chosen move. We can wire this up next if you want the bot to play automatically.

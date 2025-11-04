@@ -9,6 +9,8 @@ from legal_moves import (
     get_pawn_direction, get_pawn_start_row, get_pawn_promotion_row,
     is_promotion_move, get_promoted_piece
 )
+from evaluation import evaluate, evaluate_pov
+from engine.search import SearchState, find_best_move, Move as EngineMove
 
 pygame.init()
 screen = pygame.display.set_mode((680,560))  # Expanded height for material displays
@@ -41,6 +43,14 @@ promotion = PromotionController()
 
 # Settings state
 settings_dropdown_open = False 
+
+# Engine settings
+engine_enabled = False        # Set True to let the engine play
+human_side = 'white'          # Side controlled by human
+engine_side = 'black'         # Engine plays the opposite of human_side
+engine_depth = 3              # search depth (plies)
+engine_think_delay_ms = 0   # delay before engine moves (milliseconds)
+engine_next_move_time = None  # scheduled time (ticks) when engine will move
 
 # Castling rules
 white_king_moved = False
@@ -91,6 +101,8 @@ else:
         ["p", "p", "p", "p", "p", "p", "p", "p"],
         ["r", "n", "b", "q", "k", "b", "n", "r"],
     ]
+
+# No persistent eval state needed; we'll compute on-demand each frame and around moves.
 
 ## moved to renderer.draw_board
 
@@ -151,42 +163,51 @@ def draw_settings_gear():
 def draw_settings_dropdown():
     """Draw the settings dropdown menu"""
     if not settings_dropdown_open:
-        return None
-    
-    dropdown_width = 120
-    dropdown_height = 50
+        return []
+
+    items = []
+    # Build item labels with state
+    engine_status = "On" if engine_enabled else "Off"
+    human_white_check = "✓ " if human_side == 'white' else "  "
+    human_black_check = "✓ " if human_side == 'black' else "  "
+
+    items.append(("flip", "Flip Board"))
+    items.append(("human_white", f"{human_white_check}Play as White"))
+    items.append(("human_black", f"{human_black_check}Play as Black"))
+    items.append(("engine_toggle", f"Engine: {engine_status} (Opposite)"))
+
+    dropdown_width = 200
+    item_height = 28
+    padding = 6
+    dropdown_height = item_height * len(items) + padding * 2
     dropdown_x = 680 - dropdown_width - 10  # Align with gear
     dropdown_y = 50  # Below the gear
-    
+
     # Draw dropdown background
-    pygame.draw.rect(screen, (240, 240, 240), (dropdown_x, dropdown_y, dropdown_width, dropdown_height))
-    pygame.draw.rect(screen, (100, 100, 100), (dropdown_x, dropdown_y, dropdown_width, dropdown_height), 2)
-    
-    # Draw "Flip Board" option
-    option_height = dropdown_height
-    option_rect = (dropdown_x, dropdown_y, dropdown_width, option_height)
-    
-    # Check if mouse is hovering over option
-    mouse_x, mouse_y = pygame.mouse.get_pos()
-    is_hovering = (dropdown_x <= mouse_x <= dropdown_x + dropdown_width and 
-                   dropdown_y <= mouse_y <= dropdown_y + option_height)
-    
-    if is_hovering:
-        pygame.draw.rect(screen, (200, 220, 255), option_rect)  # Light blue hover
-    
-    # Draw option text
+    bg_rect = pygame.Rect(dropdown_x, dropdown_y, dropdown_width, dropdown_height)
+    pygame.draw.rect(screen, (240, 240, 240), bg_rect)
+    pygame.draw.rect(screen, (100, 100, 100), bg_rect, 2)
+
     font_small = pygame.font.Font(None, 18)
-    text = font_small.render("Flip Board", True, (0, 0, 0))
-    text_rect = text.get_rect()
-    text_x = dropdown_x + (dropdown_width - text_rect.width) // 2
-    text_y = dropdown_y + (option_height - text_rect.height) // 2
-    screen.blit(text, (text_x, text_y))
-    
-    return option_rect  # Return bounds for click detection
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+
+    option_rects = []
+    for idx, (key, label) in enumerate(items):
+        oy = dropdown_y + padding + idx * item_height
+        rect = pygame.Rect(dropdown_x, oy, dropdown_width, item_height)
+        # Hover highlight
+        if rect.collidepoint(mouse_x, mouse_y):
+            pygame.draw.rect(screen, (200, 220, 255), rect)
+        # Text
+        text = font_small.render(label, True, (0, 0, 0))
+        screen.blit(text, (dropdown_x + 8, oy + (item_height - text.get_height()) // 2))
+        option_rects.append((key, rect))
+
+    return option_rects  # List of (key, rect)
 
 def handle_settings_click(pos):
     """Handle clicks on settings gear and dropdown"""
-    global settings_dropdown_open, white_on_bottom
+    global settings_dropdown_open, white_on_bottom, engine_enabled, engine_side, human_side
     
     x, y = pos
     
@@ -200,17 +221,33 @@ def handle_settings_click(pos):
     
     # Check dropdown click if open
     if settings_dropdown_open:
-        dropdown_bounds = draw_settings_dropdown()
-        if dropdown_bounds:
-            dropdown_x, dropdown_y, dropdown_width, dropdown_height = dropdown_bounds
-            if dropdown_x <= x <= dropdown_x + dropdown_width and dropdown_y <= y <= dropdown_y + dropdown_height:
-                # Flip board option clicked
-                white_on_bottom = not white_on_bottom
-                settings_dropdown_open = False  # Close dropdown after selection
-                print(f"Board flipped! white_on_bottom = {white_on_bottom}")
-                return True  # Consumed the click
-        else:
-            # Click outside dropdown, close it
+        options = draw_settings_dropdown()
+        # If clicked any option
+        clicked_any = False
+        for key, rect in options:
+            if rect.collidepoint(x, y):
+                clicked_any = True
+                if key == 'flip':
+                    white_on_bottom = not white_on_bottom
+                    print(f"Board flipped! white_on_bottom = {white_on_bottom}")
+                elif key == 'human_white':
+                    human_side = 'white'
+                    engine_side = 'black'
+                    engine_enabled = engine_enabled  # no change; keep current on/off
+                    print("Human side set to White; engine set to Black (opposite)")
+                elif key == 'human_black':
+                    human_side = 'black'
+                    engine_side = 'white'
+                    engine_enabled = engine_enabled
+                    print("Human side set to Black; engine set to White (opposite)")
+                elif key == 'engine_toggle':
+                    engine_enabled = not engine_enabled
+                    engine_side = 'black' if human_side == 'white' else 'white'
+                    print(f"Engine {'enabled' if engine_enabled else 'disabled'} on {engine_side}")
+                settings_dropdown_open = False
+                return True
+        # If clicked outside dropdown, close it
+        if not clicked_any:
             settings_dropdown_open = False
             return True
     
@@ -231,6 +268,10 @@ def handle_click(pos):
         if selected_piece:
             if promotion.complete(selected_piece, board_state, current_turn, move_history, material_tracker, white_on_bottom):
                 switch_turn()
+        return
+
+    # Block human moves on engine's turn
+    if engine_enabled and current_turn == engine_side:
         return
     
     row, col = get_square_from_mouse(pos)
@@ -277,6 +318,12 @@ def handle_click(pos):
                     print(f"Debug: White pawn moving to row {end_row} (promotion if row 0)")
                 else:
                     print(f"Debug: Black pawn moving to row {end_row} (promotion if row 7)")
+
+            # Evaluate BEFORE applying the move (White POV)
+            try:
+                eval_before_white = evaluate(board_state, 'w')
+            except Exception:
+                eval_before_white = None
 
             move_piece(selected_square, (end_row, end_col))
 
@@ -338,6 +385,19 @@ def handle_click(pos):
                 
                 is_white_move = current_turn == "white"
                 move_history.add_move(move_notation, is_white_move)
+
+                # Evaluate position after the move (White POV and next-to-move POV, centipawns)
+                try:
+                    eval_after_white = evaluate(board_state, 'w')
+                    next_side = 'white' if current_turn == 'black' else 'black'  # opponent is to move next
+                    eval_next = eval_after_white if next_side == 'white' else -eval_after_white
+                    if eval_before_white is not None:
+                        delta = eval_after_white - eval_before_white
+                        print(f"Eval before: {eval_before_white} cp  after: {eval_after_white} cp  (Δ {delta:+} cp) | {next_side.title()} POV {eval_next} cp")
+                    else:
+                        print(f"Eval after: {eval_after_white} cp | {next_side.title()} POV {eval_next} cp")
+                except Exception as e:
+                    print(f"Eval error: {e}")
 
                 switch_turn()
             else:
@@ -501,6 +561,148 @@ def switch_turn():
     current_turn = "black" if current_turn == "white" else "white"
 
 
+def apply_engine_move(mv: EngineMove, moving_color: str):
+    """Apply an engine-selected move to the board using existing game mechanics,
+    updating material, history, flags, and eval just like a human move.
+    """
+    global last_pawn_move
+
+    start = mv.start
+    end = mv.end
+    sr, sc = start
+    er, ec = end
+    piece = board_state[sr][sc]
+
+    # Detect capture (including en passant)
+    is_capture = board_state[er][ec] != "."
+    captured_piece = board_state[er][ec] if is_capture else None
+
+    # En passant capture detection (use existing helper for reliability)
+    is_ep = en_passant(start, end, piece, board_state, last_pawn_move, white_on_bottom)
+    if is_ep:
+        is_capture = True
+        direction = get_pawn_direction(piece, white_on_bottom)
+        captured_pawn_row = er - direction
+        captured_piece = board_state[captured_pawn_row][ec]
+
+    # Castling handling
+    is_castling = mv.is_castle or (piece in 'Kk' and abs(sc - ec) == 2)
+    castle_side = None
+    if is_castling:
+        castle_side = "kingside" if ec > sc else "queenside"
+        move_king_and_rook(start, end, piece)
+    else:
+        move_piece(start, end)
+
+    # En passant capture piece removal (after moving pawn)
+    if is_ep:
+        direction = get_pawn_direction(piece, white_on_bottom)
+        captured_pawn_row = er - direction
+        board_state[captured_pawn_row][ec] = "."
+
+    # Handle promotion (engine decides piece, no UI) with safety guards
+    promotion_piece = None
+    if mv.promotion is not None:
+        # Only allow if a pawn reached last rank (defensive guard against stray promotions)
+        if piece in 'Pp':
+            target_last_rank = (er == 0 and piece == 'P') or (er == 7 and piece == 'p')
+            if target_last_rank:
+                promotion_piece = mv.promotion
+                board_state[er][ec] = promotion_piece
+                # Material gain for promotion
+                material_tracker.promote_pawn(promotion_piece, moving_color)
+            else:
+                # Ignore invalid promotion flag
+                print(f"Warning: Ignored invalid promotion on non-last rank move: {piece} {start}->{end} mv.promotion={mv.promotion}")
+        else:
+            # Ignore invalid promotion flag
+            print(f"Warning: Ignored invalid promotion for non-pawn piece: {piece} {start}->{end} mv.promotion={mv.promotion}")
+
+    # Update en passant last move marker for double pawn pushes
+    if piece in 'Pp' and promotion_piece is None:
+        if abs(er - sr) == 2 and sc == ec:
+            last_pawn_move = (er, ec)
+        else:
+            last_pawn_move = None
+    else:
+        last_pawn_move = None
+
+    # Track material capture
+    if is_capture and captured_piece:
+        material_tracker.capture_piece(captured_piece, moving_color)
+
+    # Check/checkmate/stalemate flags for notation
+    opponent_color = "black" if moving_color == "white" else "white"
+    is_check_flag = is_in_check(opponent_color, board_state, white_on_bottom)
+    is_checkmate_result = False
+    is_stalemate_result = False
+    if is_check_flag:
+        is_checkmate_result = is_checkmate(opponent_color, board_state, white_on_bottom)
+    else:
+        is_stalemate_result = is_stalemate(opponent_color, board_state, white_on_bottom)
+
+    # Move notation
+    move_notation = move_history.convert_to_algebraic_notation(
+        start, end, piece, board_state,
+        is_capture=is_capture, is_check=is_check_flag, is_checkmate=is_checkmate_result,
+        is_castling=is_castling, castle_side=castle_side, promotion_piece=promotion_piece
+    )
+    move_history.add_move(move_notation, moving_color == 'white')
+
+    # Print eval before/after is already handled in human path; here we at least update console
+    try:
+        eval_after_white = evaluate(board_state, 'w')
+        next_side = 'white' if moving_color == 'black' else 'black'
+        eval_next = eval_after_white if next_side == 'white' else -eval_after_white
+        print(f"Engine moved {move_notation} | Eval after (White POV): {eval_after_white} cp | {next_side.title()} POV {eval_next} cp")
+    except Exception as e:
+        print(f"Eval error after engine move: {e}")
+
+
+def engine_take_turn():
+    """If it's engine's turn, search and apply the best move."""
+    global white_king_moved, white_rook_left_moved, white_rook_right_moved
+    global black_king_moved, black_rook_left_moved, black_rook_right_moved
+    global last_pawn_move, current_turn, engine_next_move_time
+
+    if not engine_enabled:
+        return
+    if current_turn != engine_side:
+        return
+    if promotion.pending:
+        return
+
+    # Schedule a small delay so the move is visible before engine replies
+    now = pygame.time.get_ticks()
+    if engine_next_move_time is None:
+        engine_next_move_time = now + engine_think_delay_ms
+        return
+    if now < engine_next_move_time:
+        return
+    # Clear the schedule so we only move once
+    engine_next_move_time = None
+
+    st = SearchState(
+        white_on_bottom=white_on_bottom,
+        white_king_moved=white_king_moved,
+        white_rook_left_moved=white_rook_left_moved,
+        white_rook_right_moved=white_rook_right_moved,
+        black_king_moved=black_king_moved,
+        black_rook_left_moved=black_rook_left_moved,
+        black_rook_right_moved=black_rook_right_moved,
+        last_pawn_move=last_pawn_move,
+    )
+
+    side = current_turn
+    best = find_best_move(board_state, side, engine_depth, st=st)
+    if best is None:
+        print(f"No legal moves for {side} (checkmate or stalemate)")
+        return
+
+    apply_engine_move(best, side)
+    switch_turn()
+
+
 #####  game loop #####
 running = True
 while running:
@@ -510,6 +712,9 @@ while running:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mouse_pos = pygame.mouse.get_pos()
             handle_click(mouse_pos)
+
+    # If it's the engine's turn, let it move (synchronous for now)
+    engine_take_turn()
     
     # Clear screen
     screen.fill((50, 50, 50))  # Dark background
@@ -529,6 +734,12 @@ while running:
     
     # Draw move history panel (always visible on the right)
     move_history.draw(screen)
+    # Draw evaluation readout in the right panel (compute fresh each frame)
+    try:
+        eval_display_white = evaluate(board_state, 'w')
+    except Exception:
+        eval_display_white = None
+    renderer.draw_evaluation_panel(screen, font, eval_display_white)
     
     # Draw settings gear and dropdown
     draw_settings_gear()

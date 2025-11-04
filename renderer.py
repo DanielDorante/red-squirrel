@@ -133,3 +133,23 @@ def draw_material_displays(screen, font, white_on_bottom, material_tracker, piec
 
     draw_captured_pieces_display(screen, piece_images, material_tracker, top_player, 10, 20)
     draw_captured_pieces_display(screen, piece_images, material_tracker, bottom_player, 10, 545)
+
+
+def draw_evaluation_panel(screen, font, eval_cp: int | None):
+    """Draws a small evaluation readout in the right panel below the title.
+
+    eval_cp: centipawns from White's perspective (can be None before first eval).
+    """
+    panel_x = 480
+    text_color = (0, 0, 0)
+    label = font.render("Evaluation", True, text_color)
+    screen.blit(label, (panel_x + 10, 30))
+
+    if eval_cp is None:
+        value_text = "--"
+    else:
+        # Show in pawns with sign and two decimals, e.g., +0.35
+        pawns = eval_cp / 100.0
+        value_text = f"{pawns:+.2f}"
+    value_surface = font.render(value_text, True, text_color)
+    screen.blit(value_surface, (panel_x + 110, 30))

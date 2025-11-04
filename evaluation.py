@@ -306,8 +306,20 @@ def evaluate(board: Board, side_to_move: str) -> int:
     return score
 
 
+def evaluate_pov(board: Board, pov: str) -> int:
+    """Return evaluation from the specified side's perspective.
+
+    pov: 'w' or 'b'. Internally, base evaluation is from White's POV.
+    """
+    base = evaluate(board, 'w')
+    if pov.lower().startswith('w'):
+        return base
+    return -base
+
+
 __all__ = [
     "evaluate",
+    "evaluate_pov",
     "material_term",
     "piece_square_term",
     "pawn_structure_term",
