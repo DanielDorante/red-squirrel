@@ -112,17 +112,8 @@ ChessBot/
 
 ## Screenshots
 
-You can add screenshots to the repo and link them here:
-
-```
-/docs/screenshot-1.png
-/docs/screenshot-2.png
-```
-
-Then reference with:
-
 ```md
-![Game](docs/screenshot-1.png)
+![Game](/docs/screenshot-1.png)
 ```
 
 Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot!
