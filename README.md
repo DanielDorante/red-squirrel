@@ -125,7 +125,7 @@ Then reference with:
 ![Game](docs/screenshot-1.png)
 ```
 
-Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot! 🎉
+Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot!
 
 ## Evaluation module (engine work-in-progress)
 
