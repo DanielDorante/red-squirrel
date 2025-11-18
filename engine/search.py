@@ -7,14 +7,19 @@ It uses evaluate(board) from evaluation.py and move generation from legal_moves.
 Move representation: a lightweight dataclass carrying start, end, and optional promotion.
 State: carries castling flags and last_pawn_move so special moves can be handled.
 
-This version includes:
-- Single legal-move generation per node (no duplicate work for terminal checks)
-- Basic move ordering (captures, promotions, en passant first) to improve alpha-beta pruning
+Features:
+- Negamax + alpha-beta pruning
+- Quiescence search (captures / promotions / en passant only, bounded depth)
+- Basic move ordering (captures, promotions, en passant first)
+- Iterative deepening
+- Optional time control per move
+- Node counting for debugging / performance insight
 """
 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+import time
 
 from evaluation import evaluate
 from legal_moves import (
@@ -26,13 +31,24 @@ from legal_moves import (
     get_promoted_piece,
     en_passant,
     get_pawn_direction,
-    get_pawn_start_row,  # currently unused, but kept in case you use it elsewhere
 )
 
 Board = List[List[str]]
 Pos = Tuple[int, int]
 
-INF = 10**9
+INF = 10 ** 9
+
+# --- Search configuration defaults ---
+
+DEFAULT_MAX_DEPTH = 4          # search depth in plies (can be overridden per call)
+DEFAULT_TIME_LIMIT = None      # seconds per move (None = no limit)
+
+# --- Global search diagnostics / timing ---
+
+NODES: int = 0
+Q_NODES: int = 0
+START_TIME: float = 0.0
+TIME_LIMIT: Optional[float] = None  # set per search in find_best_move
 
 
 @dataclass
@@ -45,7 +61,7 @@ class SearchState:
     black_king_moved: bool = False
     black_rook_left_moved: bool = False
     black_rook_right_moved: bool = False
-    # En passant tracking: coordinates of the pawn that moved two last turn
+    # En passant tracking: coordinates of the pawn that moved two squares last turn
     last_pawn_move: Optional[Pos] = None
 
 
@@ -62,9 +78,27 @@ def side_str(colour: int) -> str:
     return 'white' if colour == 1 else 'black'
 
 
-def generate_legal_moves(board: Board, side_to_move: str, st: SearchState) -> List[Move]:
+def time_up() -> bool:
+    """Return True if we've exceeded the per-move time limit."""
+    if TIME_LIMIT is None:
+        return False
+    return (time.time() - START_TIME) >= TIME_LIMIT
+
+
+def generate_legal_moves(
+    board: Board,
+    side_to_move: str,
+    st: SearchState,
+    tactical_only: bool = False,
+) -> List[Move]:
+    """
+    Generate all legal moves for side_to_move.
+    If tactical_only is True, only returns captures, promotions, and en-passant moves,
+    and skips castling. This is used in quiescence search.
+    """
     moves: List[Move] = []
-    # 1) Normal piece moves
+
+    # 1) Normal piece moves (and promotions / en passant)
     for r in range(8):
         for c in range(8):
             ch = board[r][c]
@@ -76,51 +110,63 @@ def generate_legal_moves(board: Board, side_to_move: str, st: SearchState) -> Li
                     # Filter illegal (king-in-check) moves
                     if leaves_king_in_check((r, c), (er, ec), board, side_to_move, st.white_on_bottom, st.last_pawn_move):
                         continue
+
                     # Prevent illegal diagonal pawn moves into empty squares unless en passant is legal
                     if ch in 'Pp' and board[er][ec] == '.' and abs(ec - c) == 1 and abs(er - r) == 1:
                         if not en_passant((r, c), (er, ec), ch, board, st.last_pawn_move, st.white_on_bottom):
                             continue
+
                     # Promotions: if pawn and promotion square
                     if is_promotion_move((r, c), (er, ec), board, st.white_on_bottom):
-                        # Generate four promotion choices
                         is_white = ch.isupper()
                         for p in ('q', 'r', 'b', 'n'):
                             prom_piece = get_promoted_piece(p, is_white)
-                            moves.append(Move(start=(r, c), end=(er, ec), promotion=prom_piece))
+                            mv = Move(start=(r, c), end=(er, ec), promotion=prom_piece)
+                            # Promotions are always "tactical", so we don't filter them
+                            moves.append(mv)
                     else:
-                        # En passant hint (for make/undo)
+                        # En passant hint
                         is_ep = False
                         if ch in 'Pp' and board[er][ec] == '.':
-                            # diagonal move into empty square could be en passant; defer exact check to make_move
                             if abs(ec - c) == 1 and abs(er - r) == 1:
+                                # Potential en passant capture; actual legality checked in make_move
                                 is_ep = True
-                        moves.append(Move(start=(r, c), end=(er, ec), is_en_passant=is_ep))
 
-    # 2) Castling moves
-    # Find the king square and ask for castling squares using flags.
-    for r in range(8):
-        for c in range(8):
-            ch = board[r][c]
-            if ch == '.':
-                continue
-            if side_to_move == 'white' and ch == 'K':
-                castles = calculate_castling_moves(
-                    r, c, ch, board, st.white_on_bottom,
-                    st.white_king_moved, st.white_rook_left_moved, st.white_rook_right_moved,
-                    st.black_king_moved, st.black_rook_left_moved, st.black_rook_right_moved,
-                )
-                for (er, ec) in castles:
-                    if not leaves_king_in_check((r, c), (er, ec), board, 'white', st.white_on_bottom, st.last_pawn_move):
-                        moves.append(Move(start=(r, c), end=(er, ec), is_castle=True))
-            elif side_to_move == 'black' and ch == 'k':
-                castles = calculate_castling_moves(
-                    r, c, ch, board, st.white_on_bottom,
-                    st.white_king_moved, st.white_rook_left_moved, st.white_rook_right_moved,
-                    st.black_king_moved, st.black_rook_left_moved, st.black_rook_right_moved,
-                )
-                for (er, ec) in castles:
-                    if not leaves_king_in_check((r, c), (er, ec), board, 'black', st.white_on_bottom, st.last_pawn_move):
-                        moves.append(Move(start=(r, c), end=(er, ec), is_castle=True))
+                        mv = Move(start=(r, c), end=(er, ec), is_en_passant=is_ep)
+
+                        if tactical_only:
+                            # Keep only captures or en-passant
+                            if board[er][ec] == '.' and not mv.is_en_passant:
+                                continue
+
+                        moves.append(mv)
+
+    # 2) Castling moves: skip if we're in tactical-only mode (quiescence)
+    if not tactical_only:
+        for r in range(8):
+            for c in range(8):
+                ch = board[r][c]
+                if ch == '.':
+                    continue
+                if side_to_move == 'white' and ch == 'K':
+                    castles = calculate_castling_moves(
+                        r, c, ch, board, st.white_on_bottom,
+                        st.white_king_moved, st.white_rook_left_moved, st.white_rook_right_moved,
+                        st.black_king_moved, st.black_rook_left_moved, st.black_rook_right_moved,
+                    )
+                    for (er, ec) in castles:
+                        if not leaves_king_in_check((r, c), (er, ec), board, 'white', st.white_on_bottom, st.last_pawn_move):
+                            moves.append(Move(start=(r, c), end=(er, ec), is_castle=True))
+                elif side_to_move == 'black' and ch == 'k':
+                    castles = calculate_castling_moves(
+                        r, c, ch, board, st.white_on_bottom,
+                        st.white_king_moved, st.white_rook_left_moved, st.white_rook_right_moved,
+                        st.black_king_moved, st.black_rook_left_moved, st.black_rook_right_moved,
+                    )
+                    for (er, ec) in castles:
+                        if not leaves_king_in_check((r, c), (er, ec), board, 'black', st.white_on_bottom, st.last_pawn_move):
+                            moves.append(Move(start=(r, c), end=(er, ec), is_castle=True))
+
     return moves
 
 
@@ -151,14 +197,13 @@ def make_move(board: Board, mv: Move, st: SearchState) -> Undo:
     ep_captured_pos: Optional[Pos] = None
     was_en_passant = False
 
-    # Move the piece
+    # Move the piece off its starting square
     board[sr][sc] = '.'
 
     # En passant capture (only if truly legal per last_pawn_move)
     if mv.is_en_passant and piece in 'Pp' and captured == '.':
         direction = get_pawn_direction(piece, st.white_on_bottom)
         cap_r = er - direction
-        # EP is legal only if the pawn being captured is exactly last_pawn_move
         if st.last_pawn_move == (cap_r, ec) and board[cap_r][ec] in ('p' if piece == 'P' else 'P'):
             ep_captured_pos = (cap_r, ec)
             captured = board[cap_r][ec]
@@ -242,10 +287,11 @@ def undo_move(board: Board, undo: Undo, st: SearchState):
 
     # Restore destination square
     if undo.was_en_passant:
-        # For EP, destination was empty prior to move
         board[er][ec] = '.'
     else:
         board[er][ec] = undo.captured if undo.captured is not None else '.'
+
+    # Restore piece to starting square
     board[sr][sc] = undo.moved_piece
 
     # Restore en passant-captured pawn if any
@@ -281,31 +327,102 @@ def _move_order_key(board: Board, mv: Move) -> int:
     if mv.promotion is not None:
         score += 900
 
-    # You can add more heuristics later (e.g., checks, killer moves, history)
+    # TODO: you can later add MVV-LVA, killer moves, history heuristics, etc.
 
     return score
 
 
-def nega_max(board: Board, depth: int, alpha: int, beta: int, colour: int, st: SearchState) -> int:
+def quiescence(
+    board: Board,
+    alpha: int,
+    beta: int,
+    colour: int,
+    st: SearchState,
+    depth_q: int = 0,
+    max_q_depth: int = 6,
+) -> int:
+    """
+    Quiescence search: extends tactical positions at leaves to avoid evaluating
+    unstable positions mid-capture. Searches captures, promotions, and en passant only.
+
+    colour = +1 for side 'white' to move, -1 for 'black'.
+    Returns a score from the perspective of the root side using negamax convention.
+    """
+    global Q_NODES
+    Q_NODES += 1
+
+    if time_up():
+        # Time safety: just stand pat
+        return colour * evaluate(board, 'w')
+
+    # Depth cap on quiescence to avoid runaway capture trees
+    if depth_q >= max_q_depth:
+        return colour * evaluate(board, 'w')
+
+    # Stand-pat evaluation (no move)
+    stand_pat = colour * evaluate(board, 'w')
+    if stand_pat >= beta:
+        return beta
+    if stand_pat > alpha:
+        alpha = stand_pat
+
+    side = side_str(colour)
+
+    # Generate only tactical moves: captures / promotions / en passant, no castling
+    tactical_moves = generate_legal_moves(board, side, st, tactical_only=True)
+
+    if not tactical_moves:
+        return alpha
+
+    tactical_moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
+
+    for mv in tactical_moves:
+        undo = make_move(board, mv, st)
+        score = -quiescence(board, -beta, -alpha, -colour, st, depth_q + 1, max_q_depth)
+        undo_move(board, undo, st)
+
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+
+    return alpha
+
+
+def nega_max(
+    board: Board,
+    depth: int,
+    alpha: int,
+    beta: int,
+    colour: int,
+    st: SearchState,
+) -> int:
     """
     Negamax with alpha-beta pruning.
     colour = +1 for white to move, -1 for black to move.
     """
+    global NODES
+    NODES += 1
+
+    if time_up():
+        # Emergency cutoff: return static eval
+        return colour * evaluate(board, 'w')
+
     side = side_str(colour)
     moves = generate_legal_moves(board, side, st)
 
     # Terminal node: no legal moves
     if not moves:
         if is_in_check(side, board, st.white_on_bottom):
-            return -INF + 1  # checkmate is terrible for side to move
+            # Checkmate: very bad for side to move
+            return -INF + 1
         else:
-            return 0  # stalemate
+            # Stalemate
+            return 0
 
     # Depth cutoff (only after verifying it's not terminal)
     if depth == 0:
-        # evaluate(board, 'w') should return from White's POV,
-        # so multiply by colour to flip for Black.
-        return colour * evaluate(board, 'w')
+        return quiescence(board, alpha, beta, colour, st)
 
     # Move ordering: good moves first → more pruning
     moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
@@ -327,42 +444,80 @@ def nega_max(board: Board, depth: int, alpha: int, beta: int, colour: int, st: S
     return value
 
 
-def find_best_move(board: Board, side_to_move: str, depth: int, st: Optional[SearchState] = None) -> Optional[Move]:
+def find_best_move(
+    board: Board,
+    side_to_move: str,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    st: Optional[SearchState] = None,
+    time_limit_s: Optional[float] = DEFAULT_TIME_LIMIT,
+    verbose: bool = True,
+) -> Optional[Move]:
     """
-    Root search: returns the best Move for side_to_move at given depth.
+    Root search: returns the best Move for side_to_move.
+
+    Uses iterative deepening up to max_depth, optionally limited by time_limit_s.
+    If time_limit_s is None, search is depth-limited only.
     """
+    global NODES, Q_NODES, START_TIME, TIME_LIMIT
+
     if st is None:
         st = SearchState()
 
     colour = 1 if side_to_move == 'white' else -1
-    best_move: Optional[Move] = None
-    best_score = -INF
+    opponent = 'black' if side_to_move == 'white' else 'white'
 
+    # Reset diagnostics
+    NODES = 0
+    Q_NODES = 0
+    START_TIME = time.time()
+    TIME_LIMIT = time_limit_s
+
+    # Generate root moves once
     moves = generate_legal_moves(board, side_to_move, st)
     if not moves:
         return None
 
-    # Tactical shortcut: if any move is immediate checkmate, return it right away (mate-in-1)
-    opponent = 'black' if side_to_move == 'white' else 'white'
-    for mv in moves:
-        undo = make_move(board, mv, st)
-        opp_moves = generate_legal_moves(board, opponent, st)
-        is_mate = (not opp_moves) and is_in_check(opponent, board, st.white_on_bottom)
-        undo_move(board, undo, st)
-        if is_mate:
-            return mv
-
-    # Same ordering as in nega_max
+    # Order them once before iterative deepening
     moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
 
-    for mv in moves:
-        undo = make_move(board, mv, st)
-        score = -nega_max(board, depth - 1, -INF, INF, -colour, st)
-        undo_move(board, undo, st)
+    best_move: Optional[Move] = None
+    best_score = -INF
 
-        if score > best_score:
-            best_score = score
-            best_move = mv
+    # Iterative deepening: search depths 1..max_depth
+    for depth in range(1, max_depth + 1):
+        if time_up():
+            break
+
+        depth_best_move = None
+        depth_best_score = -INF
+
+        for mv in moves:
+            if time_up():
+                break
+
+            undo = make_move(board, mv, st)
+            score = -nega_max(board, depth - 1, -INF, INF, -colour, st)
+            undo_move(board, undo, st)
+
+            if score > depth_best_score or depth_best_move is None:
+                depth_best_score = score
+                depth_best_move = mv
+
+        if depth_best_move is not None:
+            best_move = depth_best_move
+            best_score = depth_best_score
+
+        if verbose:
+            elapsed = time.time() - START_TIME
+            nps = int(NODES / elapsed) if elapsed > 0 else 0
+            print(
+                f"[search] side={side_to_move} depth={depth} "
+                f"best_score={best_score} nodes={NODES} q_nodes={Q_NODES} "
+                f"time={elapsed:.2f}s nps={nps}"
+            )
+
+        if time_up():
+            break
 
     return best_move
 
@@ -373,4 +528,6 @@ __all__ = [
     'find_best_move',
     'nega_max',
     'generate_legal_moves',
+    'make_move',
+    'undo_move',
 ]

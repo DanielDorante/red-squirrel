@@ -49,7 +49,7 @@ settings_dropdown_open = False
 engine_enabled = False        # Set True to let the engine play
 human_side = 'white'          # Side controlled by human
 engine_side = 'black'         # Engine plays the opposite of human_side
-engine_depth = 4              # search depth (plies)
+engine_depth = 4             # search depth (plies)
 engine_think_delay_ms = 0   # delay before engine moves (milliseconds)
 engine_next_move_time = None  # scheduled time (ticks) when engine will move
 engine_randomize_first = True # randomize the engine's first move this game
@@ -704,13 +704,44 @@ def engine_take_turn():
     )
 
     side = current_turn
-    # Randomize the very first engine move for variety
+    # Curated opening move selection for the very first engine move
+    def _curated_opening_candidates(side: str):
+        # Coordinates use internal board indexing (row 0=8th rank)
+        if side == 'white':
+            return [
+                ((6, 4), (4, 4)),  # e2e4
+                ((6, 3), (4, 3)),  # d2d4
+                ((6, 2), (4, 2)),  # c2c4
+                ((7, 6), (5, 5)),  # g1f3 (Nf3)
+                ((7, 1), (5, 2)),  # b1c3 (Nc3)
+            ]
+        else:  # black
+            return [
+                ((1, 4), (3, 4)),  # e7e5
+                ((1, 2), (3, 2)),  # c7c5 (Sicilian)
+                ((1, 4), (2, 4)),  # e7e6 (French)
+                ((1, 2), (2, 2)),  # c7c6 (Caro-Kann)
+                ((1, 3), (3, 3)),  # d7d5 (Queen's Gambit declines/Slav setups)
+                ((0, 6), (2, 5)),  # g8f6 (Alekhine/Indian setups)
+                ((1, 6), (2, 6)),  # g7g6 (King's Indian/Modern)
+                ((1, 3), (2, 3)),  # d7d6 (Pirc/Philidor)
+            ]
+
+    def _choose_curated_first_move(side: str, st: SearchState):
+        legal = generate_legal_moves(board_state, side, st)
+        if not legal:
+            return None
+        cand_pairs = _curated_opening_candidates(side)
+        curated = [mv for mv in legal if (mv.start, mv.end) in cand_pairs]
+        if curated:
+            return random.choice(curated)
+        # If none of the curated moves are legal (unusual start), fall back to search
+        return None
+
     if engine_randomize_first and not engine_has_moved:
-        moves = generate_legal_moves(board_state, side, st)
-        if not moves:
-            print(f"No legal moves for {side} (checkmate or stalemate)")
-            return
-        best = random.choice(moves)
+        best = _choose_curated_first_move(side, st)
+        if best is None:
+            best = find_best_move(board_state, side, engine_depth, st=st)
     else:
         best = find_best_move(board_state, side, engine_depth, st=st)
     if best is None:
