@@ -112,7 +112,9 @@ ChessBot/
 
 ## Screenshots
 
-![Red Squirrel GUI](docs/screenshot-1.png)
+<p align="center">
+  <img src="docs/screenshot-1.png" width="450">
+</p>
 
 Contributions and suggestions welcome. Enjoy playing and hacking on ChessBot!
 
