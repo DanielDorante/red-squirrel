@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import time
+import random
 
 from evaluation import evaluate
 from legal_moves import (
@@ -49,6 +50,56 @@ NODES: int = 0
 Q_NODES: int = 0
 START_TIME: float = 0.0
 TIME_LIMIT: Optional[float] = None  # set per search in find_best_move
+
+# --- Transposition table & Zobrist hashing ---
+
+_PIECES_ORDER = 'PNBRQKpnbrqk'
+_PIECE_TO_IDX: dict = {p: i for i, p in enumerate(_PIECES_ORDER)}
+
+
+def _make_zobrist():
+    rng = random.Random(0x6A09E667F3BCC908)  # fixed seed for reproducibility
+    pieces = [[rng.getrandbits(64) for _ in range(64)] for _ in range(12)]
+    side   = rng.getrandbits(64)              # XOR in when black to move
+    castle = [rng.getrandbits(64) for _ in range(4)]  # wK-side, wQ-side, bK-side, bQ-side
+    ep     = [rng.getrandbits(64) for _ in range(8)]  # one entry per file
+    return pieces, side, castle, ep
+
+
+_Z_PIECES, _Z_SIDE, _Z_CASTLE, _Z_EP = _make_zobrist()
+
+
+def _board_hash(board: Board, colour: int, st: 'SearchState') -> int:
+    """Compute a Zobrist hash for the current position."""
+    h = 0
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if p != '.':
+                h ^= _Z_PIECES[_PIECE_TO_IDX[p]][r * 8 + c]
+    if colour == -1:  # black to move
+        h ^= _Z_SIDE
+    # Castling availability (XOR key when castling is still legal)
+    if not st.white_king_moved:
+        if not st.white_rook_right_moved:
+            h ^= _Z_CASTLE[0]
+        if not st.white_rook_left_moved:
+            h ^= _Z_CASTLE[1]
+    if not st.black_king_moved:
+        if not st.black_rook_right_moved:
+            h ^= _Z_CASTLE[2]
+        if not st.black_rook_left_moved:
+            h ^= _Z_CASTLE[3]
+    if st.last_pawn_move is not None:
+        h ^= _Z_EP[st.last_pawn_move[1]]
+    return h
+
+
+_TT: dict = {}   # hash -> (depth, score, flag)
+_TT_EXACT = 0    # score is exact
+_TT_LOWER = 1    # score is a lower bound (fail-high / beta cutoff)
+_TT_UPPER = 2    # score is an upper bound (fail-low / alpha cutoff)
+_TT_MAX   = 1 << 20  # evict when TT exceeds ~1M entries
 
 
 @dataclass
@@ -398,15 +449,31 @@ def nega_max(
     st: SearchState,
 ) -> int:
     """
-    Negamax with alpha-beta pruning.
+    Negamax with alpha-beta pruning and transposition table.
     colour = +1 for white to move, -1 for black to move.
     """
     global NODES
     NODES += 1
 
     if time_up():
-        # Emergency cutoff: return static eval
         return colour * evaluate(board, 'w')
+
+    alpha_orig = alpha
+
+    # Transposition table lookup
+    h = _board_hash(board, colour, st)
+    tt_entry = _TT.get(h)
+    if tt_entry is not None:
+        tt_depth, tt_score, tt_flag = tt_entry
+        if tt_depth >= depth:
+            if tt_flag == _TT_EXACT:
+                return tt_score
+            elif tt_flag == _TT_LOWER:
+                alpha = max(alpha, tt_score)
+            elif tt_flag == _TT_UPPER:
+                beta = min(beta, tt_score)
+            if alpha >= beta:
+                return tt_score
 
     side = side_str(colour)
     moves = generate_legal_moves(board, side, st)
@@ -414,10 +481,8 @@ def nega_max(
     # Terminal node: no legal moves
     if not moves:
         if is_in_check(side, board, st.white_on_bottom):
-            # Checkmate: very bad for side to move
             return -INF + 1
         else:
-            # Stalemate
             return 0
 
     # Depth cutoff (only after verifying it's not terminal)
@@ -440,6 +505,15 @@ def nega_max(
             alpha = value
         if alpha >= beta:
             break  # beta cutoff
+
+    # Store result in transposition table
+    if not time_up():
+        flag = _TT_EXACT
+        if value <= alpha_orig:
+            flag = _TT_UPPER
+        elif value >= beta:
+            flag = _TT_LOWER
+        _TT[h] = (depth, value, flag)
 
     return value
 
@@ -471,6 +545,10 @@ def find_best_move(
     Q_NODES = 0
     START_TIME = time.time()
     TIME_LIMIT = time_limit_s
+
+    # Evict transposition table if it's grown too large
+    if len(_TT) > _TT_MAX:
+        _TT.clear()
 
     # Generate root moves once
     moves = generate_legal_moves(board, side_to_move, st)

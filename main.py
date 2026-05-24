@@ -1,5 +1,6 @@
 import pygame
 import random
+import threading
 import renderer
 from promotion import PromotionController
 from move_history import MoveHistory
@@ -54,6 +55,8 @@ engine_think_delay_ms = 0   # delay before engine moves (milliseconds)
 engine_next_move_time = None  # scheduled time (ticks) when engine will move
 engine_randomize_first = True # randomize the engine's first move this game
 engine_has_moved = False      # track if engine has made a move this game
+engine_thread = None          # background search thread (threading.Thread)
+engine_result = None          # EngineMove set by the search thread when done
 
 # Castling rules
 white_king_moved = False
@@ -669,8 +672,43 @@ def apply_engine_move(mv: EngineMove, moving_color: str):
         print(f"Eval error after engine move: {e}")
 
 
+# --- Opening book helpers (module-level so the search thread can call them) ---
+
+def _curated_opening_candidates(side: str):
+    """Return (start, end) pairs for curated first-move candidates."""
+    if side == 'white':
+        return [
+            ((6, 4), (4, 4)),  # e2e4
+            ((6, 3), (4, 3)),  # d2d4
+            ((6, 2), (4, 2)),  # c2c4
+            ((7, 6), (5, 5)),  # g1f3 (Nf3)
+            ((7, 1), (5, 2)),  # b1c3 (Nc3)
+        ]
+    else:
+        return [
+            ((1, 4), (3, 4)),  # e7e5
+            ((1, 2), (3, 2)),  # c7c5 (Sicilian)
+            ((1, 4), (2, 4)),  # e7e6 (French)
+            ((1, 2), (2, 2)),  # c7c6 (Caro-Kann)
+            ((1, 3), (3, 3)),  # d7d5
+            ((0, 6), (2, 5)),  # g8f6
+            ((1, 6), (2, 6)),  # g7g6 (King's Indian/Modern)
+            ((1, 3), (2, 3)),  # d7d6 (Pirc/Philidor)
+        ]
+
+
+def _choose_curated_first_move(side: str, board: list, st: SearchState):
+    """Pick a random legal curated opening move, or None if none match."""
+    legal = generate_legal_moves(board, side, st)
+    if not legal:
+        return None
+    candidates = [mv for mv in legal if (mv.start, mv.end) in _curated_opening_candidates(side)]
+    return random.choice(candidates) if candidates else None
+
+
 def engine_take_turn():
-    """If it's engine's turn, search and apply the best move."""
+    """Kick off the engine search thread or apply its result when ready."""
+    global engine_thread, engine_result
     global white_king_moved, white_rook_left_moved, white_rook_right_moved
     global black_king_moved, black_rook_left_moved, black_rook_right_moved
     global last_pawn_move, current_turn, engine_next_move_time
@@ -682,16 +720,32 @@ def engine_take_turn():
     if promotion.pending:
         return
 
-    # Schedule a small delay so the move is visible before engine replies
+    # --- Poll: did the background thread finish? ---
+    if engine_thread is not None:
+        if engine_thread.is_alive():
+            return  # still thinking
+        # Thread done — grab result and clean up
+        best = engine_result
+        engine_thread = None
+        engine_result = None
+        if best is None:
+            print(f"No legal moves for {engine_side} (checkmate or stalemate)")
+            return
+        apply_engine_move(best, engine_side)
+        globals()['engine_has_moved'] = True
+        switch_turn()
+        return
+
+    # --- Schedule a short delay before starting the search ---
     now = pygame.time.get_ticks()
     if engine_next_move_time is None:
         engine_next_move_time = now + engine_think_delay_ms
         return
     if now < engine_next_move_time:
         return
-    # Clear the schedule so we only move once
     engine_next_move_time = None
 
+    # --- Snapshot game state for the thread ---
     st = SearchState(
         white_on_bottom=white_on_bottom,
         white_king_moved=white_king_moved,
@@ -702,55 +756,22 @@ def engine_take_turn():
         black_rook_right_moved=black_rook_right_moved,
         last_pawn_move=last_pawn_move,
     )
-
+    board_copy = [row[:] for row in board_state]  # shallow-copy each row
     side = current_turn
-    # Curated opening move selection for the very first engine move
-    def _curated_opening_candidates(side: str):
-        # Coordinates use internal board indexing (row 0=8th rank)
-        if side == 'white':
-            return [
-                ((6, 4), (4, 4)),  # e2e4
-                ((6, 3), (4, 3)),  # d2d4
-                ((6, 2), (4, 2)),  # c2c4
-                ((7, 6), (5, 5)),  # g1f3 (Nf3)
-                ((7, 1), (5, 2)),  # b1c3 (Nc3)
-            ]
-        else:  # black
-            return [
-                ((1, 4), (3, 4)),  # e7e5
-                ((1, 2), (3, 2)),  # c7c5 (Sicilian)
-                ((1, 4), (2, 4)),  # e7e6 (French)
-                ((1, 2), (2, 2)),  # c7c6 (Caro-Kann)
-                ((1, 3), (3, 3)),  # d7d5 (Queen's Gambit declines/Slav setups)
-                ((0, 6), (2, 5)),  # g8f6 (Alekhine/Indian setups)
-                ((1, 6), (2, 6)),  # g7g6 (King's Indian/Modern)
-                ((1, 3), (2, 3)),  # d7d6 (Pirc/Philidor)
-            ]
+    use_curated = engine_randomize_first and not engine_has_moved
 
-    def _choose_curated_first_move(side: str, st: SearchState):
-        legal = generate_legal_moves(board_state, side, st)
-        if not legal:
-            return None
-        cand_pairs = _curated_opening_candidates(side)
-        curated = [mv for mv in legal if (mv.start, mv.end) in cand_pairs]
-        if curated:
-            return random.choice(curated)
-        # If none of the curated moves are legal (unusual start), fall back to search
-        return None
+    def _run():
+        global engine_result
+        if use_curated:
+            best = _choose_curated_first_move(side, board_copy, st)
+            if best is None:
+                best = find_best_move(board_copy, side, engine_depth, st=st)
+        else:
+            best = find_best_move(board_copy, side, engine_depth, st=st)
+        engine_result = best
 
-    if engine_randomize_first and not engine_has_moved:
-        best = _choose_curated_first_move(side, st)
-        if best is None:
-            best = find_best_move(board_state, side, engine_depth, st=st)
-    else:
-        best = find_best_move(board_state, side, engine_depth, st=st)
-    if best is None:
-        print(f"No legal moves for {side} (checkmate or stalemate)")
-        return
-
-    apply_engine_move(best, side)
-    globals()['engine_has_moved'] = True
-    switch_turn()
+    engine_thread = threading.Thread(target=_run, daemon=True)
+    engine_thread.start()
 
 
 #####  game loop #####
@@ -770,7 +791,7 @@ while running:
                 mouse_pos = pygame.mouse.get_pos()
                 handle_click(mouse_pos)
 
-    # If it's the engine's turn, let it move (synchronous for now)
+    # Kick off or poll the engine search thread (non-blocking)
     engine_take_turn()
     
     # Clear screen
@@ -797,7 +818,12 @@ while running:
     except Exception:
         eval_display_white = None
     renderer.draw_evaluation_panel(screen, font, eval_display_white)
-    
+
+    # Show thinking indicator while engine search thread is running
+    if engine_thread is not None and engine_thread.is_alive():
+        thinking_surf = font.render("Thinking...", True, (200, 140, 0))
+        screen.blit(thinking_surf, (490, 55))
+
     # Draw settings gear and dropdown
     draw_settings_gear()
     draw_settings_dropdown()
