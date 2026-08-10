@@ -1,6 +1,7 @@
 import pygame
 import random
 import threading
+import multiprocessing
 import renderer
 from promotion import PromotionController
 from move_history import MoveHistory
@@ -13,10 +14,14 @@ from legal_moves import (
 )
 from evaluation import evaluate, evaluate_pov
 from engine.search import SearchState, find_best_move, generate_legal_moves, Move as EngineMove
+from engine.parallel_search import find_best_move_parallel, shutdown_parallel_search
 
-pygame.init()
-screen = pygame.display.set_mode((680,560))  # Expanded height for material displays
-pygame.display.set_caption("Chess Bot")
+IS_MAIN_PROCESS = multiprocessing.current_process().name == "MainProcess"
+
+if IS_MAIN_PROCESS:
+    pygame.init()
+    screen = pygame.display.set_mode((680,560))  # Expanded height for material displays
+    pygame.display.set_caption("Red Squirrel")
 
 # ==============================
 # Configuration
@@ -32,9 +37,10 @@ light_color = (240,217,181)
 dark_color = (181,136,99)
 label_color = (0,0,0)
 
-font = pygame.font.Font(None,24)
-move_history = MoveHistory(font)
-material_tracker = MaterialTracker()
+if IS_MAIN_PROCESS:
+    font = pygame.font.Font(None,24)
+    move_history = MoveHistory(font)
+    material_tracker = MaterialTracker()
 selected_square = None
 valid_moves = []  
 current_turn = "white" 
@@ -51,6 +57,8 @@ engine_enabled = False        # Set True to let the engine play
 human_side = 'white'          # Side controlled by human
 engine_side = 'black'         # Engine plays the opposite of human_side
 engine_depth = 4             # search depth (plies)
+engine_parallel = True       # use process-based root splitting
+engine_workers = 8           # number of workers
 engine_think_delay_ms = 0   # delay before engine moves (milliseconds)
 engine_next_move_time = None  # scheduled time (ticks) when engine will move
 engine_randomize_first = True # randomize the engine's first move this game
@@ -80,7 +88,7 @@ piece_images = {
     "q": pygame.image.load("chess_pieces/black_queen.png"),
     "k": pygame.image.load("chess_pieces/black_king.png"),
     "n": pygame.image.load("chess_pieces/black_knight.png"),
-}
+} if IS_MAIN_PROCESS else {}
 
 # Define the board_state depending on orientation
 if white_on_bottom:
@@ -765,72 +773,88 @@ def engine_take_turn():
         if use_curated:
             best = _choose_curated_first_move(side, board_copy, st)
             if best is None:
-                best = find_best_move(board_copy, side, engine_depth, st=st)
+                best = find_best_move_parallel(
+                    board_copy, side, engine_depth, st=st,
+                    worker_count=engine_workers,
+                ) if engine_parallel else find_best_move(board_copy, side, engine_depth, st=st)
         else:
-            best = find_best_move(board_copy, side, engine_depth, st=st)
+            best = find_best_move_parallel(
+                board_copy, side, engine_depth, st=st,
+                worker_count=engine_workers,
+            ) if engine_parallel else find_best_move(board_copy, side, engine_depth, st=st)
         engine_result = best
 
     engine_thread = threading.Thread(target=_run, daemon=True)
     engine_thread.start()
 
 
-#####  game loop #####
-running = True
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.MOUSEWHEEL:
-            move_history.handle_wheel(pygame.mouse.get_pos(), event.y)
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            # Support legacy wheel events in addition to MOUSEWHEEL
-            if hasattr(event, 'button') and event.button in (4, 5):
-                wheel_y = 1 if event.button == 4 else -1
-                move_history.handle_wheel(pygame.mouse.get_pos(), wheel_y)
-            else:
-                mouse_pos = pygame.mouse.get_pos()
-                handle_click(mouse_pos)
+def run_game():
+    global engine_thread
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.MOUSEWHEEL:
+                move_history.handle_wheel(pygame.mouse.get_pos(), event.y)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                # Support legacy wheel events in addition to MOUSEWHEEL
+                if hasattr(event, 'button') and event.button in (4, 5):
+                    wheel_y = 1 if event.button == 4 else -1
+                    move_history.handle_wheel(pygame.mouse.get_pos(), wheel_y)
+                else:
+                    mouse_pos = pygame.mouse.get_pos()
+                    handle_click(mouse_pos)
 
-    # Kick off or poll the engine search thread (non-blocking)
-    engine_take_turn()
+        # Kick off or poll the engine search thread (non-blocking)
+        engine_take_turn()
     
     # Clear screen
-    screen.fill((50, 50, 50))  # Dark background
+        screen.fill((50, 50, 50))  # Dark background
     
     # Draw material displays at top and bottom
-    renderer.draw_material_displays(screen, font, white_on_bottom, material_tracker, piece_images)
+        renderer.draw_material_displays(screen, font, white_on_bottom, material_tracker, piece_images)
     
     # Draw game elements (board stays in original position)
-    renderer.draw_board(screen, board_state, light_color, dark_color, white_on_bottom)
+        renderer.draw_board(screen, board_state, light_color, dark_color, white_on_bottom)
     
     # Only highlight moves if not in promotion mode
-    if not promotion.pending:
-        renderer.highlight_moves(screen, valid_moves, white_on_bottom)
+        if not promotion.pending:
+            renderer.highlight_moves(screen, valid_moves, white_on_bottom)
     
-    renderer.draw_pieces(screen, board_state, piece_images, white_on_bottom)
-    renderer.draw_labels(screen, font, label_color, white_on_bottom)
+        renderer.draw_pieces(screen, board_state, piece_images, white_on_bottom)
+        renderer.draw_labels(screen, font, label_color, white_on_bottom)
     
     # Draw move history panel (always visible on the right)
-    move_history.draw(screen)
+        move_history.draw(screen)
     # Draw evaluation readout in the right panel (compute fresh each frame)
-    try:
-        eval_display_white = evaluate(board_state, 'w')
-    except Exception:
-        eval_display_white = None
-    renderer.draw_evaluation_panel(screen, font, eval_display_white)
+        try:
+            eval_display_white = evaluate(board_state, 'w')
+        except Exception:
+            eval_display_white = None
+        renderer.draw_evaluation_panel(screen, font, eval_display_white)
 
     # Show thinking indicator while engine search thread is running
-    if engine_thread is not None and engine_thread.is_alive():
-        thinking_surf = font.render("Thinking...", True, (200, 140, 0))
-        screen.blit(thinking_surf, (490, 55))
+        if engine_thread is not None and engine_thread.is_alive():
+            thinking_surf = font.render("Thinking...", True, (200, 140, 0))
+            screen.blit(thinking_surf, (490, 55))
 
     # Draw settings gear and dropdown
-    draw_settings_gear()
-    draw_settings_dropdown()
+        draw_settings_gear()
+        draw_settings_dropdown()
     
     # Draw promotion UI if needed
-    if promotion.pending:
-        promotion.draw(screen, piece_images, white_on_bottom)
+        if promotion.pending:
+            promotion.draw(screen, piece_images, white_on_bottom)
     
-    pygame.display.flip()
-pygame.quit()
+        pygame.display.flip()
+
+    if engine_thread is not None and engine_thread.is_alive():
+        engine_thread.join()
+    shutdown_parallel_search()
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    run_game()

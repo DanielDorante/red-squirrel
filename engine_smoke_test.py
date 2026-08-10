@@ -14,5 +14,5 @@ board_state = [
 
 st = SearchState(white_on_bottom=True)
 
-mv = find_best_move(board_state, 'white', depth=2, st=st)
+mv = find_best_move(board_state, 'white', max_depth=2, st=st)
 print("Best move (depth 2):", mv)

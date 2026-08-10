@@ -9,8 +9,11 @@ State: carries castling flags and last_pawn_move so special moves can be handled
 
 Features:
 - Negamax + alpha-beta pruning
+- Transposition table with Zobrist hashing
+- Null move pruning (R=2, depth >= 3, with non-pawn material guard)
+- MVV-LVA capture ordering (Most Valuable Victim / Least Valuable Attacker)
+- Killer move heuristic (2 slots per ply)
 - Quiescence search (captures / promotions / en passant only, bounded depth)
-- Basic move ordering (captures, promotions, en passant first)
 - Iterative deepening
 - Optional time control per move
 - Node counting for debugging / performance insight
@@ -100,6 +103,45 @@ _TT_EXACT = 0    # score is exact
 _TT_LOWER = 1    # score is a lower bound (fail-high / beta cutoff)
 _TT_UPPER = 2    # score is an upper bound (fail-low / alpha cutoff)
 _TT_MAX   = 1 << 20  # evict when TT exceeds ~1M entries
+
+# --- Killer moves ---
+_MAX_PLY = 64
+_KILLERS: List[List] = [[None, None] for _ in range(_MAX_PLY)]
+
+# --- Null move pruning ---
+_NULL_R = 2  # depth reduction applied to the null-move search
+
+# --- MVV-LVA piece values for capture ordering ---
+_MVV_VALUES = {'P': 100, 'N': 300, 'B': 310, 'R': 500, 'Q': 900, 'K': 10000}
+
+# --- Delta pruning for quiescence ---
+_DELTA_MARGIN = 200   # safety margin: how much to add to a capture's gain before pruning
+_BIG_DELTA    = 900   # maximum single-move gain (queen capture); used for bulk pruning
+
+
+def _store_killer(ply: int, mv: 'Move') -> None:
+    """Record a quiet move that caused a beta cutoff at this ply."""
+    if ply >= _MAX_PLY:
+        return
+    k = _KILLERS[ply]
+    # Don't store duplicates in slot 0
+    if k[0] is None or k[0].start != mv.start or k[0].end != mv.end:
+        k[1] = k[0]
+        k[0] = mv
+
+
+def _has_non_pawn_material(board: Board, side: str) -> bool:
+    """Return True if side has at least one non-pawn, non-king piece.
+
+    Used to guard null move pruning: skipping a move in a king-and-pawns-only
+    endgame risks missing zugzwang positions.
+    """
+    targets = 'NBRQ' if side == 'white' else 'nbrq'
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] in targets:
+                return True
+    return False
 
 
 @dataclass
@@ -358,27 +400,34 @@ def undo_move(board: Board, undo: Undo, st: SearchState):
     st.last_pawn_move = undo.prev_last_pawn_move
 
 
-def _move_order_key(board: Board, mv: Move) -> int:
+def _move_order_key(board: Board, mv: Move, killers: list = None) -> int:
     """
-    Heuristic for move ordering:
-    - Captures, promotions, and en-passant first.
-    Higher returned value = searched earlier.
+    Move ordering heuristic (higher score = searched earlier):
+      1. Captures ordered by MVV-LVA (high-value victim, low-value attacker first)
+      2. Promotions (queen promotion highest)
+      3. Killer moves (quiet moves that caused cutoffs at this ply)
+      4. Everything else at 0
     """
     er, ec = mv.end
+    sr, sc = mv.start
     dest_piece = board[er][ec]
     score = 0
 
-    # Captures (including en passant)
-    if dest_piece != '.':
-        score += 1000
-    if mv.is_en_passant:
-        score += 1000
+    if dest_piece != '.' or mv.is_en_passant:
+        # MVV-LVA: big bonus, then victim value minus attacker value
+        victim = _MVV_VALUES.get(dest_piece.upper(), 100) if dest_piece != '.' else 100  # ep = pawn capture
+        attacker = _MVV_VALUES.get(board[sr][sc].upper(), 100)
+        score += 20000 + victim - attacker
 
-    # Promotions
     if mv.promotion is not None:
-        score += 900
+        score += 15000 + _MVV_VALUES.get(mv.promotion.upper(), 0)
 
-    # TODO: you can later add MVV-LVA, killer moves, history heuristics, etc.
+    # Killer moves: quiet moves that previously triggered a beta cutoff at this ply
+    if killers and dest_piece == '.' and mv.promotion is None and not mv.is_en_passant:
+        if killers[0] is not None and mv.start == killers[0].start and mv.end == killers[0].end:
+            score += 10000
+        elif killers[1] is not None and mv.start == killers[1].start and mv.end == killers[1].end:
+            score += 9000
 
     return score
 
@@ -390,36 +439,40 @@ def quiescence(
     colour: int,
     st: SearchState,
     depth_q: int = 0,
-    max_q_depth: int = 6,
+    max_q_depth: int = 4,
 ) -> int:
     """
-    Quiescence search: extends tactical positions at leaves to avoid evaluating
-    unstable positions mid-capture. Searches captures, promotions, and en passant only.
+    Quiescence search with delta pruning.
+    Extends tactical positions at leaves to avoid evaluating mid-capture positions.
+    Searches captures, promotions, and en passant only.
+
+    Delta pruning: skip captures whose maximum possible gain can't raise alpha,
+    reducing node count significantly in complex tactical positions.
 
     colour = +1 for side 'white' to move, -1 for 'black'.
-    Returns a score from the perspective of the root side using negamax convention.
     """
     global Q_NODES
     Q_NODES += 1
 
     if time_up():
-        # Time safety: just stand pat
         return colour * evaluate(board, 'w')
 
-    # Depth cap on quiescence to avoid runaway capture trees
+    # Depth cap to avoid runaway capture trees
     if depth_q >= max_q_depth:
         return colour * evaluate(board, 'w')
 
-    # Stand-pat evaluation (no move)
+    # Stand-pat evaluation
     stand_pat = colour * evaluate(board, 'w')
     if stand_pat >= beta:
         return beta
     if stand_pat > alpha:
         alpha = stand_pat
 
-    side = side_str(colour)
+    # Big-delta pruning: if even a queen capture can't raise alpha, bail early
+    if stand_pat + _BIG_DELTA + _DELTA_MARGIN < alpha:
+        return alpha
 
-    # Generate only tactical moves: captures / promotions / en passant, no castling
+    side = side_str(colour)
     tactical_moves = generate_legal_moves(board, side, st, tactical_only=True)
 
     if not tactical_moves:
@@ -428,6 +481,15 @@ def quiescence(
     tactical_moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
 
     for mv in tactical_moves:
+        # Per-move delta pruning: skip captures whose gain can't possibly raise alpha
+        # (always search promotions — they change material fundamentally)
+        if mv.promotion is None:
+            er, ec = mv.end
+            dest = board[er][ec]
+            gain = _MVV_VALUES.get(dest.upper(), 100) if dest != '.' else 100  # en passant = pawn
+            if stand_pat + gain + _DELTA_MARGIN <= alpha:
+                continue
+
         undo = make_move(board, mv, st)
         score = -quiescence(board, -beta, -alpha, -colour, st, depth_q + 1, max_q_depth)
         undo_move(board, undo, st)
@@ -447,9 +509,12 @@ def nega_max(
     beta: int,
     colour: int,
     st: SearchState,
+    ply: int = 0,
+    allow_null: bool = True,
 ) -> int:
     """
-    Negamax with alpha-beta pruning and transposition table.
+    Negamax with alpha-beta pruning, transposition table, null move pruning,
+    MVV-LVA ordering, and killer move heuristic.
     colour = +1 for white to move, -1 for black to move.
     """
     global NODES
@@ -476,27 +541,47 @@ def nega_max(
                 return tt_score
 
     side = side_str(colour)
+    in_check = is_in_check(side, board, st.white_on_bottom)
+
+    # Generate legal moves (also needed for terminal detection)
     moves = generate_legal_moves(board, side, st)
 
     # Terminal node: no legal moves
     if not moves:
-        if is_in_check(side, board, st.white_on_bottom):
-            return -INF + 1
-        else:
-            return 0
+        return -INF + 1 if in_check else 0
 
-    # Depth cutoff (only after verifying it's not terminal)
+    # Depth cutoff (only after confirming position is non-terminal)
     if depth == 0:
         return quiescence(board, alpha, beta, colour, st)
 
-    # Move ordering: good moves first → more pruning
-    moves.sort(key=lambda mv: _move_order_key(board, mv), reverse=True)
+    # --- Null move pruning ---
+    # If we can hand the turn to the opponent and they still can't beat beta,
+    # our position is so good we can cut without searching further.
+    # Disabled in check, at low depths, and when only pawns remain (zugzwang risk).
+    if (allow_null and not in_check and depth >= 3
+            and _has_non_pawn_material(board, side)):
+        prev_lpm = st.last_pawn_move
+        st.last_pawn_move = None          # passing forfeits en passant rights
+        null_score = -nega_max(
+            board, depth - _NULL_R - 1, -beta, -beta + 1,
+            -colour, st, ply + 1, allow_null=False,
+        )
+        st.last_pawn_move = prev_lpm
+        if null_score >= beta:
+            return beta  # fail-high: cut this branch
+
+    # Move ordering: captures (MVV-LVA) → promotions → killers → quiet moves
+    killers = _KILLERS[ply] if ply < _MAX_PLY else [None, None]
+    moves.sort(key=lambda mv: _move_order_key(board, mv, killers), reverse=True)
 
     value = -INF
 
     for mv in moves:
+        er, ec = mv.end
+        is_quiet = board[er][ec] == '.' and mv.promotion is None and not mv.is_en_passant
+
         undo = make_move(board, mv, st)
-        score = -nega_max(board, depth - 1, -beta, -alpha, -colour, st)
+        score = -nega_max(board, depth - 1, -beta, -alpha, -colour, st, ply + 1)
         undo_move(board, undo, st)
 
         if score > value:
@@ -504,6 +589,8 @@ def nega_max(
         if value > alpha:
             alpha = value
         if alpha >= beta:
+            if is_quiet:           # only store quiet cutoffs as killers
+                _store_killer(ply, mv)
             break  # beta cutoff
 
     # Store result in transposition table
@@ -550,6 +637,11 @@ def find_best_move(
     if len(_TT) > _TT_MAX:
         _TT.clear()
 
+    # Reset killer table for this search
+    for _i in range(_MAX_PLY):
+        _KILLERS[_i][0] = None
+        _KILLERS[_i][1] = None
+
     # Generate root moves once
     moves = generate_legal_moves(board, side_to_move, st)
     if not moves:
@@ -574,7 +666,7 @@ def find_best_move(
                 break
 
             undo = make_move(board, mv, st)
-            score = -nega_max(board, depth - 1, -INF, INF, -colour, st)
+            score = -nega_max(board, depth - 1, -INF, INF, -colour, st, ply=1)
             undo_move(board, undo, st)
 
             if score > depth_best_score or depth_best_move is None:

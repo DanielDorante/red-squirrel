@@ -159,3 +159,25 @@ python engine_smoke_test.py
 ```
 
 Integration into the game loop is straightforward: when it's the engine's turn, call `find_best_move(...)` and then apply the chosen move. We can wire this up next if you want the bot to play automatically.
+
+## Parallel search
+
+Red Squirrel can split root moves across persistent worker processes so CPU-bound
+search runs on multiple cores despite CPython's GIL. The UI enables this in
+`main.py` with:
+
+```python
+engine_parallel = True
+engine_workers = 8
+```
+
+Eight workers is the default for an i7-14700. Benchmark 8, 12, 16, and 20 on
+fixed positions and depths; more workers are not automatically faster because
+each process has its own transposition table and parallel alpha-beta performs
+some duplicate work. Set `engine_parallel = False` for the sequential search.
+
+Run the process-pool smoke test from a terminal:
+
+```powershell
+python parallel_engine_smoke_test.py
+```
